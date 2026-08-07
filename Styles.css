@@ -1,0 +1,25 @@
+.frozen-col {
+    position: sticky;
+    left: 0;
+    z-index: 20;
+    background-color: #fff;
+}
+.frozen-header {
+    position: sticky;
+    left: 0;
+    z-index: 30;
+}
+::-webkit-scrollbar { height: 8px; width: 8px; }
+::-webkit-scrollbar-track { background: #f1f1f1; }
+::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+
+/* FIX: Print styles so Clean View prints properly */
+@media print {
+    body { overflow: visible !important; height: auto !important; }
+    #sidebar, header, #undoToast, .no-print { display: none !important; }
+    #cleanViewModal { position: static !important; display: block !important; overflow: visible !important; height: auto !important; }
+    #cleanTableWrapper { transform: none !important; box-shadow: none !important; border: none !important; width: 100% !important; max-width: 100% !important; }
+    table { font-size: 9pt !important; }
+    th, td { border: 1px solid #999 !important; padding: 4px !important; }
+}

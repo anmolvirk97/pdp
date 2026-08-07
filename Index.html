@@ -1,0 +1,347 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="theme-color" content="#d99b26">
+    <title>PDP Morning Assembly Duty Planner</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- FontAwesome for Icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <!-- Google Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+    
+    <!-- Tailwind Config -->
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    fontFamily: { sans: ['Plus Jakarta Sans', 'sans-serif'] },
+                    colors: {
+                        brand: {
+                            50: '#fdf8f0',
+                            100: '#fbeedb',
+                            500: '#d99b26',
+                            600: '#b87e1b',
+                            900: '#233138'
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+    
+    <!-- Custom CSS -->
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body class="bg-brand-50 font-sans text-brand-900 antialiased flex h-screen overflow-hidden">
+
+    <!-- SIDEBAR NAVIGATION -->
+    <aside id="sidebar" class="fixed inset-y-0 left-0 z-50 w-72 bg-[#1b262c] text-white transform -translate-x-full transition-transform duration-300 ease-in-out lg:translate-x-0 flex flex-col shadow-xl">
+        <div class="p-6 flex items-center justify-between border-b border-gray-800">
+            <div class="flex items-center space-x-3">
+                <div class="w-10 h-10 rounded-xl bg-brand-500 flex items-center justify-center text-white font-bold text-lg shadow-md">
+                    <i class="fa-solid fa-clipboard-user"></i>
+                </div>
+                <div>
+                    <h1 class="font-bold text-lg leading-tight">PDP</h1>
+                    <p class="text-xs text-gray-400">DUTY PLANNER</p>
+                </div>
+            </div>
+            <button onclick="toggleSidebar()" class="lg:hidden text-gray-400 hover:text-white p-2 focus:outline-none" aria-label="Close sidebar"><i class="fa-solid fa-xmark text-xl"></i></button>
+        </div>
+
+        <nav class="flex-1 px-4 py-6 space-y-1 overflow-y-auto">
+            <p class="px-3 text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">Workspace</p>
+            <button onclick="switchTab('planner')" class="nav-btn w-full flex items-center space-x-3 px-4 py-3 rounded-xl text-sm font-medium transition bg-brand-500 text-white shadow-sm" data-tab="planner">
+                <i class="fa-solid fa-calendar-days w-5"></i><span>Monthly planner</span>
+            </button>
+            <button onclick="switchTab('students')" class="nav-btn w-full flex items-center space-x-3 px-4 py-3 rounded-xl text-sm font-medium transition text-gray-300 hover:bg-gray-800 hover:text-white" data-tab="students">
+                <i class="fa-solid fa-users w-5"></i><span>Students</span>
+            </button>
+            <button onclick="switchTab('duties')" class="nav-btn w-full flex items-center space-x-3 px-4 py-3 rounded-xl text-sm font-medium transition text-gray-300 hover:bg-gray-800 hover:text-white" data-tab="duties">
+                <i class="fa-solid fa-list-check w-5"></i><span>Duties</span>
+            </button>
+
+            <p class="px-3 text-xs font-semibold text-gray-400 uppercase tracking-wider mt-8 mb-2">Tools</p>
+            <button onclick="switchTab('importExport')" class="nav-btn w-full flex items-center space-x-3 px-4 py-3 rounded-xl text-sm font-medium transition text-gray-300 hover:bg-gray-800 hover:text-white" data-tab="importExport">
+                <i class="fa-solid fa-file-arrow-down w-5"></i><span>Import & export</span>
+            </button>
+        </nav>
+
+        <div class="p-4 border-t border-gray-800">
+            <div class="bg-gray-900/60 p-3 rounded-xl border border-gray-800 text-xs flex items-center justify-between">
+                <div>
+                    <p class="font-semibold text-gray-200" id="syncStatusText">Connecting...</p>
+                    <p class="text-gray-400 text-[10px]" id="syncSubText">JSONBin cloud</p>
+                </div>
+                <button onclick="saveToStorage()" class="bg-brand-500 hover:bg-brand-600 text-white p-2 rounded-lg transition shadow" title="Force Cloud Sync" aria-label="Force Cloud Sync"><i class="fa-solid fa-cloud-arrow-up"></i></button>
+            </div>
+        </div>
+    </aside>
+
+    <!-- MOBILE SIDEBAR BACKDROP -->
+    <div id="sidebarBackdrop" onclick="toggleSidebar()" class="fixed inset-0 z-40 bg-black/50 backdrop-blur-sm hidden lg:hidden"></div>
+
+    <!-- MAIN CONTENT AREA -->
+    <main class="flex-1 flex flex-col h-screen overflow-hidden">
+        <!-- TOP HEADER -->
+        <header class="bg-white border-b border-gray-200 px-6 py-4 flex items-center justify-between shadow-sm z-10 shrink-0">
+            <div class="flex items-center space-x-4">
+                <button onclick="toggleSidebar()" class="lg:hidden text-gray-600 hover:text-gray-900 focus:outline-none p-1" aria-label="Open sidebar"><i class="fa-solid fa-bars text-xl"></i></button>
+                <div>
+                    <div class="flex items-center space-x-2 text-xs text-gray-500">
+                        <span>2025 / 26</span>
+                        <span>•</span>
+                        <span class="font-medium text-gray-800">Morning assembly</span>
+                    </div>
+                    <h2 class="text-xl font-bold text-gray-900" id="pageTitle">Morning assembly, at a glance.</h2>
+                </div>
+            </div>
+
+            <div class="flex items-center space-x-4">
+                <div class="hidden md:flex items-center space-x-2 bg-emerald-50 text-emerald-700 px-3 py-1.5 rounded-full text-xs font-semibold border border-emerald-200">
+                    <span class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+                    <span id="saveBadge">Synced to cloud</span>
+                </div>
+                <div class="flex items-center space-x-3 border-l pl-4 border-gray-200">
+                    <div class="w-9 h-9 rounded-full bg-brand-100 text-brand-900 flex items-center justify-center font-bold text-sm border border-brand-500/30">TS</div>
+                    <div class="hidden sm:block text-left">
+                        <p class="text-xs font-bold text-gray-800">Teacher Station</p>
+                        <p class="text-[10px] text-gray-500">PDP Incharge</p>
+                    </div>
+                </div>
+            </div>
+        </header>
+
+        <!-- VIEW CONTAINER -->
+        <div class="flex-1 overflow-y-auto p-6 bg-brand-50/50" id="mainViewport">
+
+            <!-- TAB 1: MONTHLY PLANNER -->
+            <div id="tab-planner" class="space-y-6 pb-12 tab-content">
+                <div class="flex flex-wrap items-center justify-between gap-4 bg-white p-4 rounded-2xl border border-gray-200 shadow-sm">
+                    <div class="flex items-center space-x-3">
+                        <button onclick="openCleanViewModal()" class="flex items-center space-x-2 px-4 py-2 bg-white border border-gray-300 hover:bg-gray-50 rounded-xl text-sm font-semibold text-gray-700 transition shadow-sm">
+                            <i class="fa-solid fa-print text-brand-500"></i><span>Clean view</span>
+                        </button>
+                        <button onclick="openClearDutiesModal()" class="flex items-center space-x-2 px-4 py-2 bg-white border border-gray-300 hover:bg-red-50 hover:text-red-600 hover:border-red-200 rounded-xl text-sm font-semibold text-gray-700 transition shadow-sm">
+                            <i class="fa-solid fa-rotate-left"></i><span>Clear duties</span>
+                        </button>
+                    </div>
+                    <div class="flex items-center space-x-3">
+                        <button onclick="changeMonth(-1)" class="w-9 h-9 flex items-center justify-center rounded-xl border border-gray-300 hover:bg-gray-100" aria-label="Previous month"><i class="fa-solid fa-chevron-left text-sm"></i></button>
+                        <span id="monthYearLabel" class="text-sm font-bold px-4 py-1.5 bg-gray-100 rounded-xl min-w-[150px] text-center">Loading...</span>
+                        <button onclick="changeMonth(1)" class="w-9 h-9 flex items-center justify-center rounded-xl border border-gray-300 hover:bg-gray-100" aria-label="Next month"><i class="fa-solid fa-chevron-right text-sm"></i></button>
+                    </div>
+                </div>
+
+                <div class="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden flex flex-col">
+                    <div class="p-4 border-b border-gray-200 flex items-center justify-between bg-gray-50/50">
+                        <div class="flex items-center space-x-2">
+                            <i class="fa-solid fa-table-cells text-brand-500"></i>
+                            <h3 class="font-bold text-gray-800">Duty grid</h3>
+                            <span class="text-xs text-gray-500 font-normal ml-2">Click any student cell to modify or add</span>
+                        </div>
+                        <div class="flex items-center space-x-3 text-xs">
+                            <span class="flex items-center space-x-1"><span class="w-2.5 h-2.5 rounded-full bg-red-500 inline-block"></span><span class="text-gray-600">Multiple duties same day</span></span>
+                            <span class="flex items-center space-x-1"><span class="w-2.5 h-2.5 rounded-full bg-amber-400 inline-block"></span><span class="text-gray-600">Repeated in 10 days</span></span>
+                        </div>
+                    </div>
+
+                    <div class="overflow-x-auto relative">
+                        <table class="w-full border-collapse text-left text-sm" id="dutyTable">
+                            <thead>
+                                <tr id="tableHeaderRow" class="bg-brand-100/60 text-brand-900 border-b border-gray-200">
+                                    <th class="p-4 font-bold frozen-header bg-brand-100/90 border-r border-gray-200 w-64">DUTY / DATE</th>
+                                </tr>
+                            </thead>
+                            <tbody id="tableBody" class="divide-y divide-gray-200"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+            <!-- TAB 2: STUDENTS EDITOR -->
+            <div id="tab-students" class="space-y-6 hidden tab-content pb-12">
+                <div class="bg-white p-6 rounded-2xl border border-gray-200 shadow-sm">
+                    <div class="flex justify-between items-center mb-6">
+                        <div>
+                            <h3 class="text-lg font-bold text-gray-900">Manage Class Students</h3>
+                            <p class="text-xs text-gray-500">Add, remove, or rearrange student names in your pool.</p>
+                        </div>
+                        <button onclick="openStudentModal()" class="bg-brand-500 hover:bg-brand-600 text-white px-4 py-2 rounded-xl text-sm font-semibold shadow transition flex items-center space-x-2">
+                            <i class="fa-solid fa-plus"></i><span>Add Student</span>
+                        </button>
+                    </div>
+                    <div class="space-y-3" id="studentsGridList"></div>
+                </div>
+            </div>
+
+            <!-- TAB 3: DUTIES EDITOR -->
+            <div id="tab-duties" class="space-y-6 hidden tab-content pb-12">
+                <div class="bg-white p-6 rounded-2xl border border-gray-200 shadow-sm">
+                    <div class="flex justify-between items-center mb-6">
+                        <div>
+                            <h3 class="text-lg font-bold text-gray-900">Manage Assembly Duties</h3>
+                            <p class="text-xs text-gray-500">Configure and reorder morning assembly duties.</p>
+                        </div>
+                        <button onclick="openDutyModal()" class="bg-brand-500 hover:bg-brand-600 text-white px-4 py-2 rounded-xl text-sm font-semibold shadow transition flex items-center space-x-2">
+                            <i class="fa-solid fa-plus"></i><span>Add Duty</span>
+                        </button>
+                    </div>
+                    <div class="space-y-3" id="dutiesListContainer"></div>
+                </div>
+            </div>
+
+            <!-- TAB 4: IMPORT & EXPORT -->
+            <div id="tab-importExport" class="space-y-6 hidden tab-content pb-12">
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    <div class="bg-white p-6 rounded-2xl border border-gray-200 shadow-sm space-y-4">
+                        <div class="flex items-center space-x-3 text-brand-500">
+                            <i class="fa-solid fa-file-arrow-up text-2xl"></i>
+                            <h3 class="text-lg font-bold text-gray-900">Export Duties (CSV)</h3>
+                        </div>
+                        <p class="text-xs text-gray-500">Download your current month's duty assignments as a CSV spreadsheet.</p>
+                        <button onclick="exportCSV()" class="w-full bg-brand-500 hover:bg-brand-600 text-white py-3 rounded-xl font-semibold text-sm transition shadow">Download Current Month CSV</button>
+                    </div>
+
+                    <div class="bg-white p-6 rounded-2xl border border-gray-200 shadow-sm space-y-4">
+                        <div class="flex items-center space-x-3 text-brand-500">
+                            <i class="fa-solid fa-file-arrow-down text-2xl"></i>
+                            <h3 class="text-lg font-bold text-gray-900">Import Duties (CSV)</h3>
+                        </div>
+                        <p class="text-xs text-gray-500">Upload a properly formatted CSV file to populate duty schedules for the selected month.</p>
+                        <div>
+                            <label class="block text-xs font-semibold text-gray-700 mb-1">Upload CSV File</label>
+                            <input type="file" id="csvFileInput" accept=".csv" class="w-full border border-gray-300 rounded-xl p-2 text-sm file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:bg-brand-100 file:text-brand-900 hover:file:bg-brand-500 hover:file:text-white transition">
+                        </div>
+                        <button onclick="importCSV()" class="w-full bg-gray-800 hover:bg-gray-900 text-white py-3 rounded-xl font-semibold text-sm transition shadow">Import CSV Data</button>
+                    </div>
+                </div>
+            </div>
+
+        </div>
+    </main>
+
+    <!-- MODAL: SELECT / EDIT STUDENT FOR A CELL -->
+    <div id="cellModal" class="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm hidden flex items-center justify-center p-4">
+        <div class="bg-white w-full max-w-md rounded-2xl shadow-2xl border border-gray-200 overflow-hidden flex flex-col max-h-[85vh]">
+            <div class="p-4 border-b border-gray-200 flex items-center justify-between bg-gray-50">
+                <div>
+                    <h3 class="font-bold text-gray-900" id="modalDutyTitle">Assign Students</h3>
+                    <p class="text-xs text-gray-500" id="modalDaySubtitle">Monday • July 6, 2026</p>
+                </div>
+                <button onclick="cancelCellModal()" class="text-gray-400 hover:text-gray-600 p-1" aria-label="Close modal"><i class="fa-solid fa-xmark text-lg"></i></button>
+            </div>
+            <div class="p-4 overflow-y-auto space-y-3 flex-1" id="modalStudentListContainer"></div>
+            <div class="p-4 border-t border-gray-200 bg-gray-50 flex items-center justify-between">
+                <button onclick="addStudentSlotToCell()" class="text-xs font-semibold text-brand-600 hover:text-brand-700 flex items-center space-x-1"><i class="fa-solid fa-plus"></i><span>Add another student slot</span></button>
+                <div class="flex items-center space-x-2">
+                    <button onclick="cancelCellModal()" class="px-4 py-2 border border-gray-300 rounded-xl text-xs font-semibold text-gray-700 hover:bg-gray-100">Cancel</button>
+                    <button onclick="saveCellAssignments()" class="bg-brand-500 hover:bg-brand-600 text-white px-5 py-2 rounded-xl text-xs font-bold transition shadow">Save Changes</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- MODAL: CLEAR DUTIES -->
+    <div id="clearDutiesModal" class="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm hidden flex items-center justify-center p-4">
+        <div class="bg-white w-full max-w-md rounded-2xl shadow-2xl border border-gray-200 overflow-hidden flex flex-col">
+            <div class="p-4 border-b border-gray-200 flex items-center justify-between bg-gray-50">
+                <h3 class="font-bold text-gray-950 flex items-center space-x-2"><i class="fa-solid fa-rotate-left text-brand-500"></i><span>Clear Duties</span></h3>
+                <button onclick="closeClearDutiesModal()" class="text-gray-400 hover:text-gray-600 p-1" aria-label="Close modal"><i class="fa-solid fa-xmark text-lg"></i></button>
+            </div>
+            <div class="p-6 space-y-4">
+                <p class="text-xs text-gray-600">Select the scope you want to clear. All actions support undo right after execution.</p>
+                <div>
+                    <label class="block text-xs font-semibold text-gray-700 mb-1">Select Scope</label>
+                    <select id="clearScopeSelect" class="w-full border border-gray-300 rounded-xl p-2.5 text-xs bg-white focus:outline-none focus:ring-2 focus:ring-brand-500" onchange="toggleClearWeekSelector()">
+                        <option value="week">Specific Week in Month</option>
+                        <option value="month">Entire Current Month</option>
+                        <option value="all">All Months & Data</option>
+                    </select>
+                </div>
+                <div id="clearWeekWrapper">
+                    <label class="block text-xs font-semibold text-gray-700 mb-1">Select Week</label>
+                    <select id="clearWeekSelect" class="w-full border border-gray-300 rounded-xl p-2.5 text-xs bg-white focus:outline-none focus:ring-2 focus:ring-brand-500"></select>
+                </div>
+            </div>
+            <div class="p-4 border-t border-gray-200 bg-gray-50 flex items-center justify-end space-x-3">
+                <button onclick="closeClearDutiesModal()" class="px-4 py-2 border border-gray-300 rounded-xl text-xs font-semibold text-gray-700 hover:bg-gray-100">Cancel</button>
+                <button onclick="executeClearDuties()" class="bg-red-600 hover:bg-red-700 text-white px-5 py-2 rounded-xl text-xs font-bold transition shadow">Clear Duties</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- NOTIFICATION / UNDO TOAST -->
+    <div id="undoToast" class="fixed bottom-6 right-6 z-50 bg-gray-900 text-white px-5 py-3 rounded-2xl shadow-2xl flex items-center space-x-4 transform translate-y-24 opacity-0 transition-all duration-300">
+        <span class="text-xs" id="undoToastText">Action completed successfully.</span>
+        <button onclick="triggerUndo()" class="bg-brand-500 hover:bg-brand-600 text-white px-3 py-1.5 rounded-xl text-xs font-bold transition">Undo</button>
+    </div>
+    
+      <!-- MODAL: CLEAN PRINT VIEW -->
+    <div id="cleanViewModal" class="fixed inset-0 z-50 bg-white hidden flex flex-col overflow-hidden">
+        <!-- TOP BAR: Always visible -->
+        <div class="bg-gray-900 text-white px-6 py-3 flex items-center justify-between gap-4 shadow-md shrink-0 no-print">
+            <div class="flex items-center space-x-3">
+                <h3 class="font-bold text-lg"><i class="fa-solid fa-camera mr-2 text-brand-500"></i>Clean View</h3>
+            </div>
+            <div class="flex items-center space-x-3">
+                <button onclick="toggleCleanViewControls()" id="cleanViewToggleBtn" class="bg-gray-800 hover:bg-gray-700 text-white px-3 py-1.5 rounded-lg text-xs font-bold transition flex items-center space-x-1">
+                    <i class="fa-solid fa-chevron-up" id="cleanViewToggleIcon"></i>
+                    <span id="cleanViewToggleText">Hide Controls</span>
+                </button>
+                <button onclick="window.print()" class="bg-brand-500 hover:bg-brand-600 text-white px-4 py-2 rounded-xl text-xs font-bold transition">Print / Save PDF</button>
+                <button onclick="closeCleanViewModal()" class="bg-gray-800 hover:bg-gray-700 text-white px-4 py-2 rounded-xl text-xs font-bold transition">Close</button>
+            </div>
+        </div>
+
+        <!-- COLLAPSIBLE CONTROLS -->
+        <div id="cleanViewControls" class="transition-all duration-300 ease-in-out overflow-hidden" style="max-height: 300px;">
+            <div class="bg-gray-900 text-white px-6 py-3 flex flex-wrap items-center justify-between gap-4 border-b border-gray-800 no-print">
+                <div class="flex items-center space-x-4">
+                    <div class="flex items-center space-x-2 bg-gray-800 px-3 py-1 rounded-xl">
+                        <span class="text-xs text-gray-400">Zoom:</span>
+                        <button onclick="adjustZoom(-0.1)" class="w-6 h-6 bg-gray-700 hover:bg-gray-600 rounded text-xs font-bold" aria-label="Zoom out">-</button>
+                        <span id="zoomLevelLabel" class="text-xs font-mono w-10 text-center">100%</span>
+                        <button onclick="adjustZoom(0.1)" class="w-6 h-6 bg-gray-700 hover:bg-gray-600 rounded text-xs font-bold" aria-label="Zoom in">+</button>
+                    </div>
+                </div>
+                
+                <div class="flex flex-wrap items-center gap-3">
+                    <div class="flex items-center space-x-2 bg-gray-800 px-3 py-1.5 rounded-xl text-xs">
+                        <span class="text-gray-400 font-semibold">Weeks:</span>
+                        <button onclick="toggleAllCleanWeeks(true)" class="text-brand-400 hover:underline">Select All</button>
+                        <span>/</span>
+                        <button onclick="toggleAllCleanWeeks(false)" class="text-gray-400 hover:underline">Deselect All</button>
+                    </div>
+                    <div class="flex items-center space-x-2 bg-gray-800 p-1.5 rounded-xl text-xs overflow-x-auto max-w-xs sm:max-w-md" id="cleanWeekCheckboxesContainer">
+                        <!-- Dynamically populated checkboxes for weeks in current month -->
+                    </div>
+                </div>
+            </div>
+
+            <div class="bg-gray-800 text-gray-300 px-6 py-2 flex flex-wrap items-center gap-2 text-xs border-b border-gray-700 shrink-0 overflow-x-auto no-print" id="cleanDayCheckboxesContainer">
+                <!-- Weekday checkboxes (Mon-Sat) populated dynamically -->
+            </div>
+        </div>
+
+        <!-- TABLE AREA -->
+        <div class="flex-1 overflow-auto p-4 bg-gray-100">
+            <div id="cleanTableWrapper" class="bg-white p-6 rounded-2xl shadow-xl border border-gray-200 inline-block" style="transform: scale(1); transform-origin: top left;">
+                <div class="mb-6 border-b pb-4">
+                    <h2 class="text-2xl font-bold text-gray-900" id="cleanViewTitle">Morning Assembly Duty Schedule</h2>
+                    <p class="text-xs text-gray-500">PDP Program • Official Rotation Sheet</p>
+                </div>
+                <div class="overflow-x-auto">
+                    <table class="w-full border-collapse text-left text-sm" id="cleanTable"></table>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Custom Script -->
+    <script src="script.js"></script>
+</body>
+</html>
