@@ -194,6 +194,7 @@ async function loadFromGitHub() {
 // Called after every change: saves instantly on this device, and waits
 // 1.5 seconds of "quiet time" before sending everything to GitHub once.
 function saveToStorage() {
+    sgMarkActivity();                      // a change being saved counts as activity (session guard)
     savePending = true;
     saveLocal();
     setSyncUI("Saving...");
@@ -202,6 +203,7 @@ function saveToStorage() {
 }
 
 async function pushToGitHub() {
+    sgMarkActivity();                      // syncing counts as activity (session guard)
     savePending = false;
     setSyncUI("Syncing to GitHub...");
     try {
@@ -2904,12 +2906,13 @@ async function api(path, opts = {}) {
     const headers = { 'Content-Type': 'application/json' };
     if (sessionToken) headers.Authorization = 'Bearer ' + sessionToken;
     let res;
+    if (opts.body) opts = Object.assign({}, opts, { body: Object.assign({ did: sgDeviceId() }, opts.body) });   // tells the server which device this is
     try {
         res = await fetch(API_BASE + path, { method: opts.body ? 'POST' : 'GET', headers, body: opts.body ? JSON.stringify(opts.body) : undefined, cache: 'no-store' });
     } catch (e) { const er = new Error('Could not reach the cloud - check your internet connection and try again.'); er.network = true; throw er; }
     let j = {};
     try { j = await res.json(); } catch (e) {}
-    if (!res.ok) { const er = new Error(j.error || ('Server error (' + res.status + ')')); er.status = res.status; throw er; }
+    if (!res.ok) { const er = new Error(j.error || ('Server error (' + res.status + ')')); er.status = res.status; er.code = j.code; er.other = j.other; throw er; }
     return j;
 }
 function validPin(pin) { return /^\d{4,8}$/.test(pin); }
@@ -3114,6 +3117,12 @@ async function submitPin() {
         await finishLogin(r);
     } catch (err) {
         input.value = '';
+        if (err.code === 'active_elsewhere') {                      // already logged in somewhere else: ask first
+            showLockError('');
+            if (btn) btn.disabled = false;
+            sgAskTakeover(p, pin, err.other);
+            return;
+        }
         showLockError(netMsg(err));
         if (btn) btn.disabled = false;
         input.focus();
@@ -3125,7 +3134,9 @@ function completeLogin(p) {
     DATA_FILE = p.dataFile || ('profiles/' + p.id + '.json');
     try { localStorage.setItem('pdp_last_profile', p.id); } catch (e) {}
     document.getElementById('lockScreen').classList.add('hidden');
+    sgHideNotice();
     applyProfileToUI();
+    sgStart();                                   // begin activity tracking for this login
     if (lockResolve) { const r = lockResolve; lockResolve = null; r(p); }
 }
 
@@ -3136,7 +3147,7 @@ function requireLogin() {
         lockResolve = resolve;
         if (sessionToken) {
             try { const r = await api('/me'); await finishLogin({ token: sessionToken, profile: r.profile }); return; }
-            catch (e) { if (!e.network) clearSession(); }
+            catch (e) { if (!e.network) { clearSession(); if (e.code === 'kicked' || e.code === 'device_changed') sgSetNotice(e.message); } }
         }
         let openSwitcher = false, last = null;
         try {
@@ -3147,12 +3158,15 @@ function requireLogin() {
         const start = activeProfiles().find(p => p.id === last) || activeProfiles().find(p => p.id === DEFAULT_PROFILE_ID) || activeProfiles()[0];
         lockViewProfileId = start.id;
         document.getElementById('lockScreen').classList.remove('hidden');
+        sgShowNotice();
         if (openSwitcher) renderLockChooser(); else renderLockPin();
     });
 }
 
-// Lock / switch: push any waiting save first, then reload for a completely clean state.
-async function lockApp(openSwitcher) {
+// Lock / switch / auto-logout: push any waiting save first, tell the server (so it is recorded), then reload for a completely clean state.
+async function lockApp(openSwitcher, reason) {
+    if (sgOut) return;
+    sgOut = true; sgStop();
     try {
         if (savePending) {
             clearTimeout(saveTimer);
@@ -3160,13 +3174,176 @@ async function lockApp(openSwitcher) {
             await pushToGitHub();
         }
     } catch (e) { /* data is already saved locally */ }
+    await sgSendLogout(reason || 'manual');
     try {
         clearSession();
+        if (reason === 'idle') sgSetNotice('You were logged out because there was no activity for 1 minute.');
         if (openSwitcher) sessionStorage.setItem('pdp_open_switcher', '1');
     } catch (e) {}
     location.reload();
 }
 function switchProfile() { lockApp(true); }
+
+/* ================= SESSION GUARD =================
+   - every interaction (click, tap, scroll, key, mouse move, saving/syncing) is noted
+   - while the person is interacting, a "still active" signal goes to the server every 5 seconds
+   - no interaction for 1 minute -> a 5-second warning, then automatic logout
+   - logging in while the profile was active on another device in the last 10 seconds asks first
+   - every login / logout (manual or automatic) is recorded by the server with device, browser and IP */
+const SG_BEAT_MS = 5000, SG_IDLE_MS = 60000, SG_WARN_MS = 5000;
+let sgLast = Date.now(), sgLastSent = 0, sgBeatTimer = null, sgIdleTimer = null, sgWarnAt = 0, sgBusy = false, sgOut = false, sgBound = false, sgMoveAt = 0;
+let sgPending = null;                              // { profile, pin } - kept in memory only while the "already in use" question is open
+
+function sgDeviceId() {                            // random id remembered in this browser, so the server can tell devices apart
+    try {
+        let d = localStorage.getItem('pdp_device_id');
+        if (!d) { d = (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : (Date.now().toString(36) + Math.random().toString(36).slice(2)); localStorage.setItem('pdp_device_id', d); }
+        return d;
+    } catch (e) { return ''; }
+}
+function sgMarkActivity() { if (!sgWarnAt) sgLast = Date.now(); }   // while the warning is on screen only "Stay logged in" counts
+
+function sgStart() {
+    sgOut = false; sgLast = Date.now(); sgLastSent = 0; sgWarnAt = 0; sgBusy = false;
+    if (!sgBound) {
+        sgBound = true;
+        const o = { passive: true, capture: true };
+        ['pointerdown', 'keydown', 'wheel', 'touchstart', 'touchmove', 'input', 'scroll'].forEach(ev => window.addEventListener(ev, sgMarkActivity, o));
+        window.addEventListener('mousemove', () => { const n = Date.now(); if (n - sgMoveAt > 1000) { sgMoveAt = n; sgMarkActivity(); } }, { passive: true });
+        document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && sessionToken) { sgCheckIdle(); } });
+    }
+    sgStop(true);
+    sgBeatTimer = setInterval(sgBeat, SG_BEAT_MS);
+    sgIdleTimer = setInterval(sgCheckIdle, 1000);
+    sgBeat();                                      // the login itself is activity - report it straight away
+}
+function sgStop(keepFlags) {
+    clearInterval(sgBeatTimer); clearInterval(sgIdleTimer); sgBeatTimer = sgIdleTimer = null;
+    if (!keepFlags) { sgWarnAt = 0; const w = document.getElementById('idleWarnModal'); if (w) w.classList.add('hidden'); }
+}
+
+async function sgBeat() {
+    if (sgOut || sgBusy || !sessionToken) return;
+    if (sgLast === sgLastSent) return;             // nothing new since the last report
+    const sent = sgLast;
+    sgBusy = true;
+    try {
+        await api('/session/ping', { body: { idle: Math.max(0, Date.now() - sent) } });
+        sgLastSent = sent;
+    } catch (e) {
+        if (e.status === 401) sgRemoteLogout(e);   // another device took over (or the session ended): leave this one
+        /* network trouble: simply try again at the next beat */
+    } finally { sgBusy = false; }
+}
+
+function sgRemoteLogout(e) {
+    if (sgOut) return;
+    sgOut = true; sgStop();
+    sgSetNotice(e.code === 'kicked' ? 'You were logged out because this profile was logged in on another device.' : (e.message || 'Your session ended - please log in again.'));
+    clearSession();
+    location.reload();
+}
+
+function sgCheckIdle() {
+    if (sgOut || !sessionToken) return;
+    const now = Date.now(), idle = now - sgLast;
+    if (!sgWarnAt) {
+        if (idle < SG_IDLE_MS) return;
+        if (idle >= SG_IDLE_MS + SG_WARN_MS) { lockApp(false, 'idle'); return; }   // device was asleep / tab in background: the warning time has already passed
+        sgWarnAt = now;
+        const w = document.getElementById('idleWarnModal');
+        if (w) { w.classList.remove('hidden'); const b = document.getElementById('idleStayBtn'); if (b) b.focus(); }
+    }
+    const left = Math.ceil((sgWarnAt + SG_WARN_MS - now) / 1000);
+    const c = document.getElementById('idleWarnCount');
+    if (c) c.textContent = Math.max(left, 0);
+    if (left <= 0) lockApp(false, 'idle');
+}
+function sgStay() {
+    sgWarnAt = 0;
+    const w = document.getElementById('idleWarnModal'); if (w) w.classList.add('hidden');
+    sgLast = Date.now();
+    sgBeat();
+}
+
+async function sgSendLogout(reason) {              // records the logout on the server (never waits more than 2.5 s)
+    if (!sessionToken) return;
+    try { await Promise.race([api('/logout', { body: { reason } }), new Promise(r => setTimeout(r, 2500))]); } catch (e) {}
+}
+
+/* ---- notices on the login screen ---- */
+function sgSetNotice(msg) { try { sessionStorage.setItem('pdp_notice', msg); } catch (e) {} }
+function sgShowNotice() {
+    let m = '';
+    try { m = sessionStorage.getItem('pdp_notice') || ''; sessionStorage.removeItem('pdp_notice'); } catch (e) {}
+    const el = document.getElementById('lockNotice');
+    if (el && m) { el.textContent = m; el.classList.remove('hidden'); }
+}
+function sgHideNotice() { const el = document.getElementById('lockNotice'); if (el) { el.textContent = ''; el.classList.add('hidden'); } }
+
+/* ---- "this profile is already in use on another device" ---- */
+function sgAgo(sec) { return sec < 2 ? 'just now' : sec + ' seconds ago'; }
+function sgAskTakeover(p, pin, o) {
+    o = o || {};
+    sgPending = { profile: p, pin };
+    const row = (k, v) => v ? `<div class="flex justify-between gap-3"><span class="text-gray-500">${k}</span><span class="font-semibold text-gray-900 text-right break-all">${esc(v)}</span></div>` : '';
+    const when = o.at ? new Date(o.at).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : '';
+    document.getElementById('scBody').innerHTML = `
+        <p><b>${esc(p.name)}</b> is logged in ${o.sameDevice ? 'in another tab or window on <b>this device</b>' : 'on <b>another device</b>'} and was active <b>${esc(sgAgo(Number(o.agoSec) || 0))}</b>.</p>
+        <div class="bg-gray-50 border border-gray-200 rounded-xl p-3 text-xs space-y-1.5">
+            ${row('Browser / device', o.device)}${row('IP address', o.ip)}${row('Location', o.loc)}${row('Logged in at', when)}
+        </div>
+        <p class="text-xs text-gray-600">If you continue, that session is <b>logged out immediately</b> and this device takes over. Any change made there in the last few seconds may not be saved.</p>`;
+    const y = document.getElementById('scYesBtn'); y.disabled = false; y.textContent = 'Yes, log in here';
+    document.getElementById('scNoBtn').disabled = false;
+    document.getElementById('sessionConflictModal').classList.remove('hidden');
+    setTimeout(() => document.getElementById('scNoBtn').focus(), 50);
+}
+function sgCloseTakeover() { sgPending = null; document.getElementById('sessionConflictModal').classList.add('hidden'); }
+function sgTakeoverNo() {
+    sgCloseTakeover();
+    const i = document.getElementById('lockPin'), b = document.getElementById('lockUnlockBtn');
+    if (b) b.disabled = false;
+    if (i) i.focus();
+}
+async function sgTakeoverYes() {
+    const q = sgPending;
+    if (!q) return;
+    const y = document.getElementById('scYesBtn'), n = document.getElementById('scNoBtn');
+    y.disabled = true; n.disabled = true; y.textContent = 'Logging in...';
+    try {
+        const r = await api('/login', { body: { id: q.profile.id, pin: q.pin, force: true } });
+        sgCloseTakeover();
+        showLockError('');
+        await finishLogin(r);
+    } catch (err) {
+        sgCloseTakeover();
+        showLockError(netMsg(err));
+    }
+}
+
+/* ---- sign-in activity in Profile settings ---- */
+function sgWhen(t) { return t ? new Date(t).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : '-'; }
+const SG_EVENT_LABEL = { login: ['Logged in', 'fa-right-to-bracket text-green-600'], login_takeover: ['Logged in (took over another device)', 'fa-right-left text-amber-600'], logout: ['Logged out', 'fa-right-from-bracket text-gray-500'], auto_logout: ['Logged out automatically (inactive)', 'fa-clock text-amber-600'] };
+async function sgLoadActivity() {
+    const box = document.getElementById('psActivity');
+    if (!box) return;
+    try {
+        const r = await api('/session/log');
+        if (!document.getElementById('psActivity')) return;
+        const ev = (r.events || []).slice(0, 10).map(e => {
+            const l = SG_EVENT_LABEL[e.type] || [e.type, 'fa-circle text-gray-400'];
+            return `<div class="p-2.5 bg-gray-50 border border-gray-200 rounded-xl"><p class="text-xs font-bold text-gray-900"><i class="fa-solid ${l[1]} mr-1.5"></i>${esc(l[0])}</p><p class="text-[11px] text-gray-500">${esc(sgWhen(e.at))} &bull; ${esc(e.device || '')}${e.ip ? ' &bull; ' + esc(e.ip) : ''}${e.loc ? ' &bull; ' + esc(e.loc) : ''}</p>${e.note ? `<p class="text-[11px] text-gray-400">${esc(e.note)}</p>` : ''}</div>`;
+        }).join('');
+        const stateTxt = { active: ['Active now', 'text-green-600'], idle: ['Not active right now', 'text-amber-600'], out: ['Logged out', 'text-gray-400'] };
+        const live = r.profiles ? `<p class="text-xs font-bold text-gray-900 mt-4 mb-2">All profiles - who is logged in</p>` + r.profiles.map(x => {
+            const st = stateTxt[x.state] || stateTxt.out;
+            return `<div class="p-2.5 bg-white border border-gray-200 rounded-xl mb-1.5"><p class="text-xs font-bold text-gray-900 truncate">${esc(x.name)} <span class="font-semibold ${st[1]}">&bull; ${st[0]}</span></p><p class="text-[11px] text-gray-500">${x.state === 'out' ? (x.loggedOutAt ? 'Logged out ' + esc(sgWhen(x.loggedOutAt)) : 'Not logged in') : esc((x.device || '') + (x.ip ? ' \u2022 ' + x.ip : '') + (x.loc ? ' \u2022 ' + x.loc : '')) + '<br>Last activity ' + esc(sgWhen(x.lastActive))}</p></div>`;
+        }).join('') : '';
+        box.innerHTML = (r.kv === false ? '<p class="text-xs text-gray-400">Activity tracking is not available on the server yet (the SESSIONS Durable Object is missing).</p>' : '')
+            + `<div class="space-y-1.5">${ev || '<p class="text-xs text-gray-400">No sign-ins recorded yet.</p>'}</div>` + live;
+    } catch (e) { if (document.getElementById('psActivity')) box.innerHTML = '<p class="text-xs text-gray-400">Could not load sign-in activity.</p>'; }
+}
 
 /* ---------- Showing the active profile in the header / sidebar ---------- */
 function applyProfileToUI() {
@@ -3276,9 +3453,15 @@ function renderProfileSettings() {
                 <button onclick="changeMyPin()" class="${btn}">Update PIN</button>
             </div>
         </div>
+        <div class="border-t border-gray-200 pt-4">
+            <h4 class="text-sm font-bold text-gray-900 mb-1"><i class="fa-solid fa-shield-halved text-brand-500 mr-2"></i>Sign-in activity</h4>
+            <p class="text-xs text-gray-500 mb-3">Where and when this profile was logged in or out. You are logged out automatically after 1 minute without activity.</p>
+            <div id="psActivity"><p class="text-xs text-gray-400">Loading...</p></div>
+        </div>
         ${admin}
         ${danger}
         <p id="psMsg" class="text-xs font-semibold min-h-[16px]"></p>`;
+    sgLoadActivity();
 }
 
 async function saveProfileDetails() {
