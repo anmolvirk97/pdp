@@ -3203,7 +3203,47 @@ function sgDeviceId() {                            // random id remembered in th
 }
 function sgMarkActivity() { if (!sgWarnAt) sgLast = Date.now(); }   // while the warning is on screen only "Stay logged in" counts
 
+/* ---- make sure the pop-ups exist (they normally come from index.html; if an older index.html is still deployed they are added here) ---- */
+function sgEnsureUI() {
+    if (!document.getElementById('lockNotice')) {
+        const card = document.getElementById('lockCard');
+        if (card && card.parentNode) {
+            const n = document.createElement('div');
+            n.id = 'lockNotice'; n.setAttribute('role', 'status');
+            n.className = 'hidden mb-3 text-xs font-semibold text-amber-800 bg-amber-50 border border-amber-200 rounded-2xl px-4 py-3 text-center';
+            card.parentNode.insertBefore(n, card);
+        }
+    }
+    if (!document.getElementById('sessionConflictModal')) {
+        const d = document.createElement('div');
+        d.id = 'sessionConflictModal';
+        d.className = 'no-print fixed inset-0 z-[110] bg-black/60 backdrop-blur-sm hidden flex items-center justify-center p-4';
+        d.setAttribute('role', 'alertdialog'); d.setAttribute('aria-modal', 'true');
+        d.innerHTML = `<div class="bg-white w-full max-w-sm rounded-2xl shadow-2xl border border-gray-200 overflow-hidden" style="max-height: 94vh; max-height: 94dvh; overflow-y: auto;">
+            <div class="p-4 border-b border-amber-200 bg-amber-50 flex items-center space-x-2"><i class="fa-solid fa-triangle-exclamation text-amber-500"></i><h3 id="scTitle" class="font-bold text-gray-900">Profile already in use</h3></div>
+            <div id="scBody" class="p-4 text-sm text-gray-700 space-y-3"></div>
+            <div class="p-3 sm:p-4 border-t border-gray-200 bg-gray-50 flex items-center justify-end gap-2">
+                <button id="scNoBtn" onclick="sgTakeoverNo()" class="px-4 py-2.5 border border-gray-300 rounded-xl text-sm font-semibold text-gray-700 hover:bg-gray-100">No, cancel</button>
+                <button id="scYesBtn" onclick="sgTakeoverYes()" class="bg-brand-500 hover:bg-brand-600 text-white px-4 py-2.5 rounded-xl text-sm font-bold transition shadow">Yes, log in here</button>
+            </div></div>`;
+        document.body.appendChild(d);
+    }
+    if (!document.getElementById('idleWarnModal')) {
+        const d = document.createElement('div');
+        d.id = 'idleWarnModal';
+        d.className = 'no-print fixed inset-0 z-[120] bg-black/60 backdrop-blur-sm hidden flex items-center justify-center p-4';
+        d.setAttribute('role', 'alertdialog'); d.setAttribute('aria-modal', 'true');
+        d.innerHTML = `<div class="bg-white w-full max-w-sm rounded-2xl shadow-2xl border border-gray-200 overflow-hidden text-center"><div class="p-6">
+            <div class="w-14 h-14 mx-auto rounded-full bg-amber-100 text-amber-600 flex items-center justify-center text-2xl"><i class="fa-solid fa-clock"></i></div>
+            <h3 id="idleWarnTitle" class="mt-3 font-bold text-gray-900 text-lg">Are you still there?</h3>
+            <p class="mt-1 text-sm text-gray-600">There has been no activity for 1 minute. You will be logged out in <b id="idleWarnCount">5</b> seconds.</p>
+            <button id="idleStayBtn" onclick="sgStay()" class="mt-5 w-full bg-brand-500 hover:bg-brand-600 text-white py-3 rounded-xl font-semibold text-sm transition shadow">Stay logged in</button></div></div>`;
+        document.body.appendChild(d);
+    }
+}
+
 function sgStart() {
+    sgEnsureUI();
     sgOut = false; sgLast = Date.now(); sgLastSent = 0; sgWarnAt = 0; sgBusy = false;
     if (!sgBound) {
         sgBound = true;
@@ -3274,6 +3314,7 @@ async function sgSendLogout(reason) {              // records the logout on the 
 /* ---- notices on the login screen ---- */
 function sgSetNotice(msg) { try { sessionStorage.setItem('pdp_notice', msg); } catch (e) {} }
 function sgShowNotice() {
+    sgEnsureUI();
     let m = '';
     try { m = sessionStorage.getItem('pdp_notice') || ''; sessionStorage.removeItem('pdp_notice'); } catch (e) {}
     const el = document.getElementById('lockNotice');
@@ -3284,6 +3325,7 @@ function sgHideNotice() { const el = document.getElementById('lockNotice'); if (
 /* ---- "this profile is already in use on another device" ---- */
 function sgAgo(sec) { return sec < 2 ? 'just now' : sec + ' seconds ago'; }
 function sgAskTakeover(p, pin, o) {
+    sgEnsureUI();
     o = o || {};
     sgPending = { profile: p, pin };
     const row = (k, v) => v ? `<div class="flex justify-between gap-3"><span class="text-gray-500">${k}</span><span class="font-semibold text-gray-900 text-right break-all">${esc(v)}</span></div>` : '';
