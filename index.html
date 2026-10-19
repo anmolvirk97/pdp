@@ -62,9 +62,6 @@
             <button onclick="switchTab('planner')" class="nav-btn w-full flex items-center space-x-3 px-4 py-3 rounded-xl text-sm font-medium transition bg-brand-500 text-white shadow-sm" data-tab="planner">
                 <i class="fa-solid fa-calendar-days w-5"></i><span>Monthly planner</span>
             </button>
-            <button onclick="switchTab('scores')" class="nav-btn w-full flex items-center space-x-3 px-4 py-3 rounded-xl text-sm font-medium transition text-gray-300 hover:bg-gray-800 hover:text-white" data-tab="scores">
-                <i class="fa-solid fa-star-half-stroke w-5"></i><span>Scores & remarks</span>
-            </button>
             <button onclick="switchTab('students')" class="nav-btn w-full flex items-center space-x-3 px-4 py-3 rounded-xl text-sm font-medium transition text-gray-300 hover:bg-gray-800 hover:text-white" data-tab="students">
                 <i class="fa-solid fa-users w-5"></i><span>Students</span>
             </button>
@@ -167,6 +164,9 @@
                         <button onclick="openTodayView()" class="flex items-center space-x-2 px-4 py-2 bg-white border border-gray-300 hover:bg-gray-50 rounded-xl text-sm font-semibold text-gray-700 transition shadow-sm" title="Show today's assembly duties">
                             <i class="fa-solid fa-bullhorn text-brand-500"></i><span>Today</span>
                         </button>
+                        <button onclick="openDeletedModal()" class="flex items-center space-x-2 px-4 py-2 bg-white border border-gray-300 hover:bg-gray-50 rounded-xl text-sm font-semibold text-gray-700 transition shadow-sm" title="See assignments deleted in the last 24 hours (view only)">
+                            <i class="fa-solid fa-trash-can-arrow-up text-brand-500"></i><span>Deleted</span>
+                        </button>
                         <button onclick="openHolidaysModal()" class="flex items-center space-x-2 px-4 py-2 bg-white border border-gray-300 hover:bg-gray-50 rounded-xl text-sm font-semibold text-gray-700 transition shadow-sm" title="Mark holidays - duties can shift to the next working day">
                             <i class="fa-solid fa-umbrella-beach text-brand-500"></i><span>Holidays</span>
                         </button>
@@ -205,38 +205,6 @@
             </div>
 
             <!-- TAB 2: STUDENTS EDITOR -->
-            <!-- TAB: SCORES & REMARKS -->
-            <div id="tab-scores" class="space-y-6 hidden tab-content pb-24">
-                <div class="grid grid-cols-1 xl:grid-cols-[21rem_minmax(0,1fr)] gap-6 items-start">
-                    <!-- Month view: pick a day -->
-                    <div class="bg-white rounded-2xl border border-gray-200 shadow-sm p-4 xl:sticky xl:top-0">
-                        <div class="flex items-center justify-between mb-3">
-                            <button onclick="scoresChangeMonth(-1)" class="w-9 h-9 flex items-center justify-center rounded-xl border border-gray-300 hover:bg-gray-100" aria-label="Previous month"><i class="fa-solid fa-chevron-left text-xs"></i></button>
-                            <span id="scoresMonthLabel" class="text-sm font-bold text-gray-900">Month</span>
-                            <button onclick="scoresChangeMonth(1)" class="w-9 h-9 flex items-center justify-center rounded-xl border border-gray-300 hover:bg-gray-100" aria-label="Next month"><i class="fa-solid fa-chevron-right text-xs"></i></button>
-                        </div>
-                        <div class="grid grid-cols-7 gap-1 mb-1 text-center text-[10px] font-bold text-gray-400 uppercase">
-                            <span>Mon</span><span>Tue</span><span>Wed</span><span>Thu</span><span>Fri</span><span>Sat</span><span>Sun</span>
-                        </div>
-                        <div id="scoresCalendar" class="grid grid-cols-7 gap-1"></div>
-                        <div class="flex flex-wrap items-center gap-x-3 gap-y-1 mt-3 text-[10px] text-gray-500">
-                            <span class="flex items-center space-x-1"><span class="w-3 h-1.5 rounded-full bg-emerald-500 inline-block"></span><span>All done</span></span>
-                            <span class="flex items-center space-x-1"><span class="w-3 h-1.5 rounded-full bg-amber-400 inline-block"></span><span>In progress</span></span>
-                            <span class="flex items-center space-x-1"><span class="w-3 h-1.5 rounded-full bg-gray-300 inline-block"></span><span>Not started</span></span>
-                            <span class="flex items-center space-x-1"><span class="w-3 h-3 rounded bg-red-100 border border-red-200 inline-block"></span><span>Holiday</span></span>
-                            <span class="flex items-center space-x-1"><span class="w-3 h-3 rounded bg-indigo-100 border border-indigo-200 inline-block"></span><span>No PDP</span></span>
-                        </div>
-                        <button onclick="scoresGoToday()" class="mt-3 w-full flex items-center justify-center space-x-2 px-4 py-2.5 bg-white border border-gray-300 hover:bg-gray-50 rounded-xl text-xs font-semibold text-gray-700 transition"><i class="fa-solid fa-crosshairs text-brand-500"></i><span>Go to today</span></button>
-                    </div>
-
-                    <!-- The selected day's performance list -->
-                    <div class="min-w-0">
-                        <div id="scoresDayHeader" class="sticky top-0 z-20"></div>
-                        <div id="scoresList" class="space-y-5 mt-4"></div>
-                    </div>
-                </div>
-            </div>
-
             <div id="tab-students" class="space-y-6 hidden tab-content pb-24">
                 <div class="bg-white p-6 rounded-2xl border border-gray-200 shadow-sm">
                     <div class="flex justify-between items-center mb-6">
@@ -437,12 +405,13 @@
                 <div id="modalGridWrap" class="cm-grid-wrap p-3">
                     <div id="modalGrid" class="cm-grid"></div>
                 </div>
+                <div id="modalSelectedWrap" class="cm-selected-wrap border-t border-gray-200 bg-gray-50 px-3 pb-3">
+                    <p class="sticky top-0 z-10 bg-gray-50 -mx-3 px-3 pt-3 pb-2 text-[10px] font-bold text-gray-500 uppercase tracking-wide">Selected for this duty <span id="modalSelectedCount" class="ml-1 bg-brand-100 text-brand-900 px-1.5 py-0.5 rounded-full">0</span></p>
+                    <div id="modalSelectedList" class="cm-selected-grid"></div>
+                </div>
             </div>
             <div class="cm-footer p-4 border-t border-gray-200 bg-white flex items-center justify-between gap-2">
-                <div class="flex items-center gap-3">
-                    <button onclick="suggestAddStudent()" class="text-xs font-semibold text-brand-600 hover:text-brand-700 flex items-center space-x-1" title="Smart suggest: least-used student for this duty"><i class="fa-solid fa-wand-magic-sparkles"></i><span>Suggest</span></button>
-                    <button id="modalClearAllBtn" type="button" onclick="modalClearAll()" class="text-xs font-semibold text-red-500 hover:text-red-600 disabled:opacity-40 disabled:cursor-not-allowed flex items-center space-x-1" title="Un-select every student for this duty" disabled><i class="fa-solid fa-eraser"></i><span>Clear all (<span id="modalSelectedCount">0</span>)</span></button>
-                </div>
+                <button onclick="suggestAddStudent()" class="text-xs font-semibold text-brand-600 hover:text-brand-700 flex items-center space-x-1" title="Smart suggest: least-used student for this duty"><i class="fa-solid fa-wand-magic-sparkles"></i><span>Suggest</span></button>
                 <div class="flex items-center space-x-2">
                     <button onclick="cancelCellModal()" class="px-4 py-2 border border-gray-300 rounded-xl text-xs font-semibold text-gray-700 hover:bg-gray-100">Cancel</button>
                     <button onclick="saveCellAssignments()" class="bg-brand-500 hover:bg-brand-600 text-white px-5 py-2 rounded-xl text-xs font-bold transition shadow">Save Changes</button>
@@ -481,7 +450,7 @@
     </div>
 
     <!-- NOTIFICATION / UNDO TOAST -->
-    <div id="undoToast" role="status" aria-live="polite" style="margin-top: env(safe-area-inset-top, 0px)" class="fixed top-3 right-3 z-[60] max-w-[min(24rem,calc(100vw-1.5rem))] bg-gray-900 text-white pl-4 pr-2 py-2 rounded-2xl shadow-2xl flex items-center gap-3 transform -translate-y-28 opacity-0 pointer-events-none transition-all duration-300">
+    <div id="undoToast" role="status" aria-live="polite" style="margin-top: env(safe-area-inset-top, 0px)" class="fixed top-3 left-3 z-[60] max-w-[min(24rem,calc(100vw-1.5rem))] bg-gray-900 text-white pl-4 pr-2 py-2 rounded-2xl shadow-2xl flex items-center gap-3 transform -translate-y-28 opacity-0 pointer-events-none transition-all duration-300">
         <span class="text-xs leading-snug" id="undoToastText">Action completed successfully.</span>
         <button onclick="triggerUndo()" class="bg-brand-500 hover:bg-brand-600 text-white px-3 py-1.5 rounded-xl text-xs font-bold transition shrink-0">Undo</button>
         <button onclick="hideUndoToast()" class="text-gray-400 hover:text-white p-1.5 shrink-0" aria-label="Dismiss"><i class="fa-solid fa-xmark text-xs"></i></button>
@@ -570,11 +539,7 @@
                 <button onclick="closeHolidaysModal()" class="text-gray-400 hover:text-gray-600 p-1" aria-label="Close without saving"><i class="fa-solid fa-xmark text-lg"></i></button>
             </div>
             <div class="p-3 sm:p-4 space-y-3 overflow-y-auto">
-                <div class="grid grid-cols-2 gap-1 p-1 bg-gray-100 rounded-xl" role="group" aria-label="What are you marking?">
-                    <button type="button" id="holModeHoliday" onclick="setHolidayMode('holiday')" class="py-2 rounded-lg text-xs font-bold transition flex items-center justify-center space-x-1.5"><i class="fa-solid fa-umbrella-beach"></i><span>Holiday</span></button>
-                    <button type="button" id="holModeNoPdp" onclick="setHolidayMode('nopdp')" class="py-2 rounded-lg text-xs font-bold transition flex items-center justify-center space-x-1.5"><i class="fa-solid fa-ban"></i><span>No PDP</span></button>
-                </div>
-                <p id="holModeHelp" class="text-xs text-gray-500"></p>
+                <p class="text-xs text-gray-500">Tap days to mark or unmark them as holidays - you can pick many days, and change months before saving. Sundays are always off. The <b>2nd Saturday</b> of each month is a holiday by default; tap it to make it a working day.</p>
 
                 <div class="flex items-center justify-between">
                     <button onclick="changeHolidayMonth(-1)" class="w-9 h-9 flex items-center justify-center rounded-xl border border-gray-300 hover:bg-gray-100" aria-label="Previous month"><i class="fa-solid fa-chevron-left text-xs"></i></button>
@@ -591,26 +556,20 @@
 
                 <div class="flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-gray-500">
                     <span class="flex items-center space-x-1"><span class="w-3 h-3 rounded bg-red-500 inline-block"></span><span>Holiday</span></span>
-                    <span class="flex items-center space-x-1"><span class="w-3 h-3 rounded bg-indigo-500 inline-block"></span><span>No PDP</span></span>
                     <span class="flex items-center space-x-1"><span class="w-3 h-3 rounded bg-white border border-gray-300 inline-block"></span><span>Working day</span></span>
                     <span class="flex items-center space-x-1"><span class="w-3 h-3 rounded bg-gray-100 inline-block"></span><span>Sunday</span></span>
                 </div>
 
                 <p id="holidaySummary" class="text-xs font-semibold text-red-600 bg-red-50 border border-red-100 rounded-xl px-3 py-2"></p>
-                <p id="noPdpSummary" class="hidden text-xs font-semibold text-indigo-600 bg-indigo-50 border border-indigo-100 rounded-xl px-3 py-2"></p>
 
                 <label class="flex items-start space-x-2 text-xs text-gray-600 cursor-pointer">
                     <input type="checkbox" id="holidayShiftChk" checked class="accent-brand-500 mt-0.5">
                     <span>Move duties from newly marked holidays to the next working day</span>
                 </label>
-                <label class="flex items-start space-x-2 text-xs text-gray-600 cursor-pointer">
-                    <input type="checkbox" id="noPdpShiftChk" checked class="accent-brand-500 mt-0.5">
-                    <span>Move duties from newly marked No PDP days to the next PDP day</span>
-                </label>
             </div>
             <div class="p-3 sm:p-4 border-t border-gray-200 bg-gray-50 flex justify-end space-x-2 shrink-0">
                 <button onclick="closeHolidaysModal()" class="px-4 py-2 border border-gray-300 rounded-xl text-xs font-semibold text-gray-700 hover:bg-gray-100">Cancel</button>
-                <button onclick="saveHolidays()" class="bg-brand-500 hover:bg-brand-600 text-white px-5 py-2 rounded-xl text-xs font-bold transition shadow">Save</button>
+                <button onclick="saveHolidays()" class="bg-brand-500 hover:bg-brand-600 text-white px-5 py-2 rounded-xl text-xs font-bold transition shadow">Save holidays</button>
             </div>
         </div>
     </div>
@@ -679,36 +638,22 @@
     <!-- Profile lock screen -->
     <div id="lockScreen" class="fixed inset-0 z-[100] bg-brand-50 flex items-center justify-center p-4 overflow-y-auto">
         <div class="w-full max-w-sm my-auto">
-            <div id="lockNotice" role="status" class="hidden mb-3 text-xs font-semibold text-amber-800 bg-amber-50 border border-amber-200 rounded-2xl px-4 py-3 text-center"></div>
             <div id="lockCard" class="bg-white rounded-3xl shadow-xl border border-gray-200 p-7"></div>
             <p id="lockStatus" class="text-[10px] text-gray-400 text-center mt-4"></p>
         </div>
     </div>
 
-    <!-- Session guard: "profile already in use on another device" question (shown over the login screen) -->
-    <div id="sessionConflictModal" class="no-print fixed inset-0 z-[110] bg-black/60 backdrop-blur-sm hidden flex items-center justify-center p-4" role="alertdialog" aria-modal="true" aria-labelledby="scTitle">
-        <div class="bg-white w-full max-w-sm rounded-2xl shadow-2xl border border-gray-200 overflow-hidden" style="max-height: 94vh; max-height: 94dvh; overflow-y: auto;">
-            <div class="p-4 border-b border-amber-200 bg-amber-50 flex items-center space-x-2">
-                <i class="fa-solid fa-triangle-exclamation text-amber-500"></i>
-                <h3 id="scTitle" class="font-bold text-gray-900">Profile already in use</h3>
+    <!-- Deleted assignments (last 24 hours, view only) -->
+    <div id="deletedModal" class="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm hidden flex items-center justify-center p-4">
+        <div class="bg-white w-full max-w-lg rounded-2xl shadow-2xl border border-gray-200 overflow-hidden flex flex-col max-h-[88vh]">
+            <div class="p-4 border-b border-gray-200 flex items-center justify-between bg-gray-50">
+                <div class="min-w-0">
+                    <h3 class="font-bold text-gray-900 flex items-center space-x-2"><i class="fa-solid fa-trash-can-arrow-up text-brand-500"></i><span>Deleted assignments</span><span id="deletedCount" class="text-[11px] font-semibold text-gray-400 ml-1"></span></h3>
+                    <p class="text-[11px] text-gray-500 mt-0.5">Removed in the last 24 hours. View only - nothing can be restored from here.</p>
+                </div>
+                <button onclick="closeDeletedModal()" class="text-gray-400 hover:text-gray-600 p-1" aria-label="Close modal"><i class="fa-solid fa-xmark text-lg"></i></button>
             </div>
-            <div id="scBody" class="p-4 text-sm text-gray-700 space-y-3"></div>
-            <div class="p-3 sm:p-4 border-t border-gray-200 bg-gray-50 flex items-center justify-end gap-2">
-                <button id="scNoBtn" onclick="sgTakeoverNo()" class="px-4 py-2.5 border border-gray-300 rounded-xl text-sm font-semibold text-gray-700 hover:bg-gray-100">No, cancel</button>
-                <button id="scYesBtn" onclick="sgTakeoverYes()" class="bg-brand-500 hover:bg-brand-600 text-white px-4 py-2.5 rounded-xl text-sm font-bold transition shadow">Yes, log in here</button>
-            </div>
-        </div>
-    </div>
-
-    <!-- Session guard: no activity for 1 minute -> warning, then automatic logout after 5 seconds -->
-    <div id="idleWarnModal" class="no-print fixed inset-0 z-[120] bg-black/60 backdrop-blur-sm hidden flex items-center justify-center p-4" role="alertdialog" aria-modal="true" aria-labelledby="idleWarnTitle">
-        <div class="bg-white w-full max-w-sm rounded-2xl shadow-2xl border border-gray-200 overflow-hidden text-center">
-            <div class="p-6">
-                <div class="w-14 h-14 mx-auto rounded-full bg-amber-100 text-amber-600 flex items-center justify-center text-2xl"><i class="fa-solid fa-clock"></i></div>
-                <h3 id="idleWarnTitle" class="mt-3 font-bold text-gray-900 text-lg">Are you still there?</h3>
-                <p class="mt-1 text-sm text-gray-600">There has been no activity for 1 minute. You will be logged out in <b id="idleWarnCount">5</b> seconds.</p>
-                <button id="idleStayBtn" onclick="sgStay()" class="mt-5 w-full bg-brand-500 hover:bg-brand-600 text-white py-3 rounded-xl font-semibold text-sm transition shadow">Stay logged in</button>
-            </div>
+            <div id="deletedBody" class="p-4 overflow-y-auto flex-1 bg-gray-50/50"></div>
         </div>
     </div>
 
