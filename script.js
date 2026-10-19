@@ -61,7 +61,9 @@ let appData = {
     assignments: {},     // mKey -> dutyId -> day -> [studentId]
     absences: {},        // mKey -> dutyId -> day -> [studentId]   (absent / did not perform)
     ratings: {},         // mKey -> dutyId -> day -> { studentId: { score, remark } }
+    deletedLog: [],      // assignments deleted in the last 24 hours (view-only): [{ at, mKey, dutyId, dutyName, day, sid, name, score, remark, absent, how }]
     holidays: [],        // ["YYYY-MM-DD", ...]
+    noPdp: [],           // ["YYYY-MM-DD", ...]  working days on which the regular PDP is not held
     updatedAt: 0
 };
 let lastMigrationReport = null;   // set when old (name-based) data was just upgraded
@@ -194,7 +196,6 @@ async function loadFromGitHub() {
 // Called after every change: saves instantly on this device, and waits
 // 1.5 seconds of "quiet time" before sending everything to GitHub once.
 function saveToStorage() {
-    pruneDeleted();                        // forget "deleted assignments" older than 24 hours
     sgMarkActivity();                      // a change being saved counts as activity (session guard)
     savePending = true;
     saveLocal();
@@ -315,6 +316,7 @@ function switchTab(tabId) {
     }
 
     if (tabId === 'planner') renderPlanner();
+    else if (tabId === 'scores') renderScoresTab();
     else if (tabId === 'students') renderStudentsTab();
     else if (tabId === 'duties') renderDutiesTab();
     else if (tabId === 'studentsview') renderStudentsView();
@@ -371,6 +373,9 @@ function normalizeAppData() {
     if (!appData.absences) appData.absences = {};
     if (!appData.ratings) appData.ratings = {};
     if (!appData.holidays) appData.holidays = [];
+    if (!appData.noPdp) appData.noPdp = [];
+    if (!Array.isArray(appData.deletedLog)) appData.deletedLog = [];
+    pruneDeletedLog();
     if (!appData.workingOverrides) appData.workingOverrides = []; // 2nd Saturdays the teacher marked as WORKING days
 
     if ((appData.schemaVersion || 1) < SCHEMA_VERSION) {
@@ -389,7 +394,6 @@ function normalizeAppData() {
 function tidyIdData() {
     let changed = false;
     if (!Array.isArray(appData.formerStudents)) { appData.formerStudents = []; changed = true; }
-    if (!Array.isArray(appData.deletedAssignments)) appData.deletedAssignments = [];
     const clean = (o) => { const t = String(o.name == null ? '' : o.name).replace(/\s+/g, ' ').trim(); if (t !== o.name) { o.name = t; changed = true; } };
     appData.students.forEach(st => {
         clean(st);
@@ -584,6 +588,19 @@ function isHolidayDate(y, m, d) {
     return (appData.holidays || []).includes(iso) || isSecondSaturday(y, m, d);
 }
 
+// A "No PDP" day: school is open but the regular PDP is not held (a holiday always wins over it)
+// 3 -> "3", 3.5 -> "3.5"
+function fmtScore(n) { return Number.isInteger(n) ? String(n) : n.toFixed(1); }
+// Stars for a 0-5 score in half steps: 3.5 -> ★★★½ then empty stars
+function starsHtml(score) {
+    const full = Math.floor(score), half = score - full >= 0.5 ? 1 : 0;
+    return '\u2605'.repeat(full) + (half ? '\u00bd' : '') + `<span class="text-gray-300">${'\u2606'.repeat(Math.max(0, 5 - full - half))}</span>`;
+}
+function isNoPdpDate(y, m, d) {
+    if (new Date(y, m, d).getDay() === 0 || isHolidayDate(y, m, d)) return false;
+    return (appData.noPdp || []).includes(isoOf(y, m, d));
+}
+
 /* ---- Complete-week grid: pad the planner with the days of the previous
    and next month so every visible week runs Monday-Saturday (Sundays are
    never shown). Padded days are dimmed and read-only. ---- */
@@ -631,7 +648,7 @@ function weekRangeLabel(wk) {
 function nextWorkingDayAfter(y, m, d) {
     let t = new Date(y, m, d + 1);
     let guard = 0;
-    while ((t.getDay() === 0 || isHolidayDate(t.getFullYear(), t.getMonth(), t.getDate())) && guard < 62) {
+    while ((t.getDay() === 0 || isHolidayDate(t.getFullYear(), t.getMonth(), t.getDate()) || isNoPdpDate(t.getFullYear(), t.getMonth(), t.getDate())) && guard < 62) {
         t.setDate(t.getDate() + 1);
         guard++;
     }
@@ -689,6 +706,10 @@ function renderPlanner() {
             cls += ' bg-red-100 text-red-700';
             dateCls = 'text-xs font-bold text-red-600 line-through';
             extra += `<br><span class="text-[9px] font-bold tracking-widest text-red-500">HOLIDAY</span>`;
+        } else if (isNoPdpDate(dObj.getFullYear(), dObj.getMonth(), dObj.getDate())) {
+            cls += ' bg-indigo-100 text-indigo-700';
+            dateCls = 'text-xs font-bold text-indigo-600';
+            extra += `<br><span class="text-[9px] font-bold tracking-widest text-indigo-500">NO PDP</span>`;
         }
         headerHTML += `<th class="${cls}">${dayNameShort}<br><span class="${dateCls}">${dateNum} ${shortMonths[dObj.getMonth()]}</span>${extra}</th>`;
     });
@@ -710,6 +731,11 @@ function renderPlanner() {
             // Holidays: red, read-only (duties get shifted via the Holidays tool)
             if (isHolidayDate(y, m, dayNum)) {
                 bodyHTML += `<td class="p-3 border-r border-gray-200 bg-red-50/60${pad}"></td>`;
+                return;
+            }
+            // No PDP days: read-only, no duties
+            if (isNoPdpDate(y, m, dayNum)) {
+                bodyHTML += `<td class="p-3 border-r border-gray-200 bg-indigo-50/70${pad}"></td>`;
                 return;
             }
 
@@ -805,9 +831,11 @@ function checkRepeatedWithin10Days(dutyId, year, month, dayNum, studentId) {
 }
 
 /* ================= CELL EDIT MODAL =================
-   Each slot: student picker + smart-suggest + score (1-5) + optional remark
-   + absent toggle. Names go to assignments; scores/remarks go to ratings;
-   absent flags go to absences. */
+   Student picker (tap a name to select / un-select) + smart-suggest + clear-all.
+   Names go to assignments. Scores / remarks / "not performed" are NOT edited here
+   (use the Scores & remarks tab); this editor only carries the existing ones along
+   for students who stay selected, and drops them for students who are removed. */
+let modalOrigMeta = {};   // meta each student had when the editor opened (so an accidental un-tap + re-tap loses nothing)
 
 function openCellModal(year, month, dayNum, dutyIdx) {
     const duty = appData.duties[dutyIdx];
@@ -832,11 +860,12 @@ function openCellModal(year, month, dayNum, dutyIdx) {
         const r = ratingCell[sid];
         return { score: r ? r.score : null, remark: r ? (r.remark || '') : '', absent: absentList.includes(sid) };
     });
+    modalOrigMeta = {};
+    existing.forEach((sid, i) => { modalOrigMeta[sid] = modalTempMeta[i]; });
 
     computeModalInfo();
     renderModalToolbar();
     renderModalGrid();
-    renderModalSelected();
     document.getElementById('modalGridWrap').scrollTop = 0;
     document.getElementById('cellModal').classList.remove('hidden');
 }
@@ -844,6 +873,7 @@ function openCellModal(year, month, dayNum, dutyIdx) {
 function cancelCellModal() {
     modalTempAssignments = [];
     modalTempMeta = [];
+    modalOrigMeta = {};
     document.getElementById('cellModal').classList.add('hidden');
     renderPlanner();
 }
@@ -851,6 +881,7 @@ function cancelCellModal() {
 function closeCellModal() {
     modalTempAssignments = [];
     modalTempMeta = [];
+    modalOrigMeta = {};
     document.getElementById('cellModal').classList.add('hidden');
     renderPlanner();
     saveToStorage();
@@ -976,58 +1007,50 @@ function renderModalGrid() {
             ${selected ? '<i class="fa-solid fa-circle-check text-brand-500 absolute top-2 right-2"></i>' : ''}
         </button>`;
     }).join('');
+    // Selected students no longer on the roster (archived): show them as tiles too, so they can still be un-selected
+    const rosterIds = new Set(appData.students.map(s => s.id));
+    modalTempAssignments.filter(id => !rosterIds.has(id)).forEach(id => {
+        const nm = studentName(id);
+        grid.insertAdjacentHTML('beforeend', `<button type="button" data-sid="${esc(String(id))}" onclick="modalToggleById(this.dataset.sid)" aria-pressed="true" title="${esc(nm)} (archived)" class="relative text-left p-2.5 pr-7 rounded-xl border transition min-h-[62px] flex flex-col justify-between bg-brand-50 border-brand-500 ring-2 ring-brand-500/40">
+            <span class="cm-name text-sm font-semibold text-gray-900 leading-tight">${esc(nm)}</span>
+            <span class="mt-1.5 text-[10px] font-semibold text-amber-600">archived</span>
+            <i class="fa-solid fa-circle-check text-brand-500 absolute top-2 right-2"></i>
+        </button>`);
+    });
+    updateModalClearBtn();
     wrap.scrollTop = keepScroll;
 }
 
-function renderModalSelected() {
-    const list = document.getElementById('modalSelectedList');
-    document.getElementById('modalSelectedCount').textContent = modalTempAssignments.length;
-    if (modalTempAssignments.length === 0) {
-        list.innerHTML = '<div class="text-xs text-gray-500 italic p-1" style="grid-column: 1 / -1;">No students selected yet. Tap a student above.</div>';
-        return;
-    }
-    list.innerHTML = modalTempAssignments.map((studentId, idx) => {
-        const meta = modalTempMeta[idx] || { score: null, remark: '', absent: false };
-        const onRoster = appData.students.some(s => s.id === studentId);
-        let scoreBtns = '';
-        for (let n = 1; n <= 5; n++) {
-            const on = meta.score === n;
-            scoreBtns += `<button type="button" onclick="setScoreForSlot(${idx}, ${n})" ${meta.absent ? 'disabled' : ''} class="cm-score-btn rounded-md text-xs font-bold transition ${meta.absent ? 'opacity-40 cursor-not-allowed ' : ''}${on ? 'bg-brand-500 text-white shadow' : 'bg-white border border-gray-300 text-gray-500 hover:border-brand-500 hover:text-brand-600'}" title="Score ${n}/5">${n}</button>`;
-        }
-        return `
-            <div class="min-w-0 p-2.5 rounded-xl border transition ${meta.absent ? 'bg-red-50/60 border-red-300' : 'bg-white border-gray-200'}">
-                <div class="flex items-center justify-between gap-2">
-                    <p class="min-w-0 text-sm font-bold text-gray-900 truncate" title="${esc(studentName(studentId))}">${esc(studentName(studentId))}${onRoster ? '' : ' <span class="text-[10px] font-semibold text-amber-600 ml-1">archived</span>'}</p>
-                    <div class="flex items-center gap-1.5 shrink-0">
-                        <button type="button" onclick="toggleAbsentForSlot(${idx})" class="cm-flag-btn whitespace-nowrap text-[10px] font-bold rounded-lg border transition ${meta.absent ? 'bg-red-500 text-white border-red-500' : 'bg-white text-red-500 border-red-200 hover:bg-red-50'}" title="Student was absent or did not perform" aria-pressed="${meta.absent ? 'true' : 'false'}">${meta.absent ? 'NOT PERFORMED' : 'Not performed'}</button>
-                        <button type="button" onclick="removeStudentSlot(${idx})" class="cm-icon-btn flex items-center justify-center text-red-500 hover:bg-red-50 rounded-lg" aria-label="Remove student" title="Remove student from this duty"><i class="fa-solid fa-trash text-xs"></i></button>
-                    </div>
-                </div>
-                <div class="flex flex-wrap items-center gap-2 mt-2">
-                    <span class="hidden sm:inline text-[10px] text-gray-400 font-bold uppercase">Score</span>
-                    <div class="flex items-center gap-1">${scoreBtns}</div>
-                    <input type="text" value="${esc(meta.remark)}" oninput="setRemarkForSlot(${idx}, this.value)" placeholder="Remark (optional)" aria-label="Remark (optional)" class="flex-1 min-w-[90px] border border-gray-300 rounded-lg p-1.5 text-xs bg-white focus:outline-none focus:ring-2 focus:ring-brand-500">
-                </div>
-            </div>
-        `;
-    }).join('');
+function updateModalClearBtn() {
+    const n = modalTempAssignments.length;
+    const cnt = document.getElementById('modalSelectedCount');
+    const btn = document.getElementById('modalClearAllBtn');
+    if (cnt) cnt.textContent = n;
+    if (btn) btn.disabled = n === 0;
 }
 
-// Tap a student card: select them, or un-select if already selected
+// Tap a student tile: select them, or un-select if already selected
 function modalToggleStudent(i) {
     const st = appData.students[i];
-    if (!st) return;
-    const at = modalTempAssignments.indexOf(st.id);
+    if (st) modalToggleById(st.id);
+}
+function modalToggleById(id) {
+    const at = modalTempAssignments.indexOf(id);
     if (at >= 0) {
         modalTempAssignments.splice(at, 1);
         modalTempMeta.splice(at, 1);
     } else {
-        modalTempAssignments.push(st.id);
-        modalTempMeta.push({ score: null, remark: '', absent: false });
+        modalTempAssignments.push(id);
+        modalTempMeta.push(modalOrigMeta[id] ? Object.assign({}, modalOrigMeta[id]) : { score: null, remark: '', absent: false });
     }
     renderModalGrid();
-    renderModalSelected();
-    if (at < 0) { const w = document.getElementById('modalSelectedWrap'); w.scrollTop = w.scrollHeight; }
+}
+
+// Un-select every student for this duty (nothing is saved until "Save Changes")
+function modalClearAll() {
+    modalTempAssignments = [];
+    modalTempMeta = [];
+    renderModalGrid();
 }
 
 // Smart suggest: add the least-used student for this duty who is not selected yet
@@ -1039,26 +1062,6 @@ function suggestAddStudent() {
     modalToggleStudent(i);
     const card = document.getElementById('modalGrid').children[i];
     if (card && card.scrollIntoView) card.scrollIntoView({ block: 'nearest' });
-}
-
-function setScoreForSlot(idx, n) {
-    if (!modalTempMeta[idx]) return;
-    modalTempMeta[idx].score = (modalTempMeta[idx].score === n) ? null : n; // click again to clear
-    renderModalSelected();
-}
-function setRemarkForSlot(idx, val) {
-    if (modalTempMeta[idx]) modalTempMeta[idx].remark = val;
-}
-function toggleAbsentForSlot(idx) {
-    if (!modalTempMeta[idx]) return;
-    modalTempMeta[idx].absent = !modalTempMeta[idx].absent;
-    renderModalSelected();
-}
-function removeStudentSlot(slotIdx) {
-    modalTempAssignments.splice(slotIdx, 1);
-    modalTempMeta.splice(slotIdx, 1);
-    renderModalGrid();
-    renderModalSelected();
 }
 
 /* Wand button: fill this slot with the most fair pick (see SMART ASSIGN section). */
@@ -1083,21 +1086,19 @@ function saveCellAssignments() {
 
     // Backup for undo
     lastStateBackup = JSON.parse(JSON.stringify(appData));
-
-    // Remember anyone who was on this slot and has now been taken off it (shown in "Deleted" for 24 h)
-    pruneDeleted();
-    const newIds = entries.map(e => e.id);
-    ((appData.assignments[mKey][dKey][day]) || []).forEach(sid => { if (!newIds.includes(sid)) recordDeleted(mKey, dKey, day, sid, 'Removed from cell'); });
-    // if someone was removed earlier and is put straight back, they are no longer "deleted"
-    appData.deletedAssignments = (appData.deletedAssignments || []).filter(r => !(r.mKey === mKey && r.dutyId === dKey && r.day === Number(day) && newIds.includes(r.studentId)));
-
+    // Students taken off this duty are remembered for 24 hours (view-only "Deleted" list)
+    const keptIds = new Set(entries.map(e => e.id));
+    const prevIds = (appData.assignments[mKey][dKey][day] || []).filter(id => !keptIds.has(id));
+    logDeletedSlot(mKey, dKey, day, prevIds, 'Removed in editor');
     appData.assignments[mKey][dKey][day] = entries.map(e => e.id);
 
     const ratingObj = {};
     const absentArr = [];
     entries.forEach(e => {
-        if (e.meta.absent) absentArr.push(e.id);
-        else if (e.meta.score) ratingObj[e.id] = { score: e.meta.score, remark: (e.meta.remark || '').trim() };
+        const sc = (e.meta.score === undefined || e.meta.score === '') ? null : e.meta.score;      // 0 and half marks are real scores
+        const rm = (e.meta.remark || '').trim();
+        if (e.meta.absent) { absentArr.push(e.id); if (rm) ratingObj[e.id] = { score: null, remark: rm }; }
+        else if (sc !== null || rm) ratingObj[e.id] = { score: sc, remark: rm };
     });
     appData.ratings[mKey][dKey][day] = ratingObj;
     appData.absences[mKey][dKey][day] = absentArr;
@@ -1108,110 +1109,110 @@ function saveCellAssignments() {
 
 
 /* ================= DELETED ASSIGNMENTS (last 24 hours, view only) =================
-   Whenever a student is taken off a duty (editing a cell, Clear duties, deleting a duty) a small
-   record is kept in appData.deletedAssignments for 24 hours. It stores names as text, so it still
-   reads correctly even if the student or duty is removed later. It is only for looking at: nothing
-   here restores anything. (Use the Undo button right after a change if you want it back.) */
-const DELETED_KEEP_MS = 24 * 3600e3;
+   Whenever students are taken off a duty (editor) or duties are cleared, a snapshot of
+   each removed student - with the score and remark they had - is kept for 24 hours.
+   The "Deleted" button in the month view lists them. Nothing here restores anything. */
+const DELETED_LOG_MS = 24 * 60 * 60 * 1000;
 
-function pruneDeleted() {
-    if (!Array.isArray(appData.deletedAssignments)) { appData.deletedAssignments = []; return; }
-    const cutoff = Date.now() - DELETED_KEEP_MS;
-    appData.deletedAssignments = appData.deletedAssignments.filter(r => r && r.at >= cutoff);
+function pruneDeletedLog() {
+    if (!Array.isArray(appData.deletedLog)) { appData.deletedLog = []; return; }
+    const cutoff = Date.now() - DELETED_LOG_MS;
+    appData.deletedLog = appData.deletedLog.filter(e => e && typeof e.at === 'number' && e.at >= cutoff);
 }
 
-/* Remember one removed slot entry. Call this BEFORE the data is changed. */
-function recordDeleted(mKey, dutyId, day, studentId, how) {
-    if (!Array.isArray(appData.deletedAssignments)) appData.deletedAssignments = [];
-    const duty = (appData.duties || []).find(d => d.id === dutyId);
-    const rate = ((((appData.ratings || {})[mKey] || {})[dutyId] || {})[day] || {})[studentId] || null;
-    const absent = ((((appData.absences || {})[mKey] || {})[dutyId] || {})[day] || []).includes(studentId);
-    appData.deletedAssignments.push({
-        at: Date.now(), mKey, dutyId, duty: duty ? duty.name : '(removed duty)', day: Number(day),
-        studentId, student: studentName(studentId),
-        score: rate && rate.score ? rate.score : null, remark: rate && rate.remark ? rate.remark : '',
-        absent: !!absent, how: how || ''
+// Remember students removed from one slot (duty + day), together with their score / remark / absent flag
+function logDeletedSlot(mKey, dutyId, day, ids, how) {
+    if (!ids || !ids.length) return;
+    if (!Array.isArray(appData.deletedLog)) appData.deletedLog = [];
+    const now = Date.now();
+    const duty = getDuty(dutyId);
+    const rObj = ((((appData.ratings || {})[mKey] || {})[dutyId]) || {})[day] || {};
+    const absList = ((((appData.absences || {})[mKey] || {})[dutyId]) || {})[day] || [];
+    ids.forEach(sid => {
+        const r = rObj[sid] || {};
+        appData.deletedLog.push({
+            at: now, mKey, dutyId, dutyName: duty ? duty.name : '(removed duty)', day: Number(day), sid,
+            name: studentName(sid),
+            score: (r.score === undefined || r.score === '') ? null : r.score,
+            remark: r.remark || '',
+            absent: absList.includes(sid),
+            how: how || ''
+        });
     });
+    pruneDeletedLog();
 }
 
-/* Record every student currently in the given slots (used before a bulk clear).
-   dutyIds: array of duty ids (null = all duties). days: array of day numbers (null = all days). */
-function recordDeletedSlots(mKey, dutyIds, days, how) {
-    const month = (appData.assignments || {})[mKey];
-    if (!month) return;
-    Object.keys(month).forEach(did => {
-        if (dutyIds && !dutyIds.includes(did)) return;
-        const byDay = month[did] || {};
-        Object.keys(byDay).forEach(dn => {
-            if (days && !days.includes(Number(dn))) return;
-            (byDay[dn] || []).forEach(sid => recordDeleted(mKey, did, Number(dn), sid, how));
+// Remember every assignment of a month (optionally only some days) before it is cleared
+function logDeletedFromMonth(mKey, dayFilter, how) {
+    const amap = (appData.assignments || {})[mKey];
+    if (!amap) return;
+    Object.keys(amap).forEach(dutyId => {
+        Object.keys(amap[dutyId] || {}).forEach(day => {
+            if (dayFilter && !dayFilter.has(Number(day))) return;
+            logDeletedSlot(mKey, dutyId, day, (amap[dutyId][day] || []).slice(), how);
         });
     });
 }
 
-function ddWhenAgo(t) {
-    const m = Math.max(0, Math.round((Date.now() - t) / 60000));
-    if (m < 1) return 'just now';
-    if (m < 60) return m + ' min ago';
-    const hr = Math.floor(m / 60);
-    return hr + ' h ' + (m % 60 ? (m % 60) + ' min ' : '') + 'ago';
+function openDeletedView() {
+    pruneDeletedLog();
+    renderDeletedView();
+    document.getElementById('deletedViewModal').classList.remove('hidden');
 }
-function ddTimeLeft(t) {
-    const m = Math.max(0, Math.round((t + DELETED_KEEP_MS - Date.now()) / 60000));
-    return m >= 60 ? Math.floor(m / 60) + ' h left' : m + ' min left';
+function closeDeletedView() { document.getElementById('deletedViewModal').classList.add('hidden'); }
+
+function agoText(ts) {
+    const min = Math.max(0, Math.round((Date.now() - ts) / 60000));
+    if (min < 1) return 'just now';
+    if (min < 60) return min + ' min ago';
+    const h = Math.floor(min / 60), m = min % 60;
+    return h + ' h' + (m ? ' ' + m + ' min' : '') + ' ago';
 }
 
-function openDeletedModal() {
-    pruneDeleted();
-    renderDeletedModal();
-    document.getElementById('deletedModal').classList.remove('hidden');
-}
-function closeDeletedModal() { document.getElementById('deletedModal').classList.add('hidden'); }
-
-function renderDeletedModal() {
-    const body = document.getElementById('deletedBody');
-    const list = (appData.deletedAssignments || []).slice().sort((a, b) => b.at - a.at);
-    const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-    document.getElementById('deletedCount').textContent = list.length ? list.length + ' record' + (list.length === 1 ? '' : 's') : '';
-    if (!list.length) {
-        body.innerHTML = `<div class="text-center py-10 text-gray-400"><i class="fa-solid fa-trash-can-arrow-up text-3xl mb-3"></i><p class="text-sm font-semibold text-gray-500">Nothing deleted in the last 24 hours</p><p class="text-xs mt-1">Removed duty assignments will show up here for a day.</p></div>`;
+function renderDeletedView() {
+    const body = document.getElementById('deletedViewBody');
+    const sub = document.getElementById('deletedViewSub');
+    if (!body) return;
+    const cutoff = Date.now() - DELETED_LOG_MS;
+    const log = (appData.deletedLog || []).filter(e => e && e.at >= cutoff);
+    if (!log.length) {
+        if (sub) sub.textContent = 'Nothing deleted in the last 24 hours.';
+        body.innerHTML = '<div class="text-center text-gray-400 py-10"><i class="fa-solid fa-clock-rotate-left text-3xl mb-3"></i><p class="text-sm font-semibold text-gray-500">No deleted assignments</p><p class="text-xs mt-1">Assignments you remove or clear will be listed here for 24 hours.</p></div>';
         return;
     }
-    // group by the duty date (e.g. "12 Oct 2026") so related removals sit together
-    const groups = new Map();
-    list.forEach(r => {
-        const [y, mo] = String(r.mKey).split('-').map(Number);
-        const key = r.mKey + '|' + r.day;
-        if (!groups.has(key)) groups.set(key, { label: `${r.day} ${MONTHS[(mo || 1) - 1]} ${y}`, sort: y * 10000 + (mo || 1) * 100 + r.day, items: [] });
-        groups.get(key).items.push(r);
+    // one card per duty + date; newest deletion first
+    const groups = {};
+    log.forEach(e => {
+        const k = e.mKey + '|' + e.dutyId + '|' + e.day;
+        (groups[k] = groups[k] || { mKey: e.mKey, dutyName: e.dutyName, day: e.day, latest: 0, items: [] });
+        groups[k].items.push(e);
+        if (e.at > groups[k].latest) groups[k].latest = e.at;
     });
-    const ordered = [...groups.values()].sort((a, b) => a.sort - b.sort);
-    body.innerHTML = ordered.map(g => `
-        <div class="mb-4">
-            <p class="text-xs font-bold text-gray-500 uppercase tracking-wide mb-2"><i class="fa-regular fa-calendar mr-1.5"></i>${esc(g.label)}</p>
-            <div class="space-y-2">${g.items.map(r => `
-                <div class="p-3 bg-white border border-gray-200 rounded-xl">
-                    <div class="flex items-start justify-between gap-2">
-                        <div class="min-w-0">
-                            <p class="text-sm font-bold text-gray-900 truncate">${esc(r.student)}</p>
-                            <p class="text-xs text-gray-600 truncate"><i class="fa-solid fa-clipboard-list text-brand-500 mr-1"></i>${esc(r.duty)}</p>
-                        </div>
-                        <div class="text-right shrink-0">
-                            <p class="text-[11px] font-semibold text-red-500">Deleted ${esc(ddWhenAgo(r.at))}</p>
-                            <p class="text-[10px] text-gray-400">${esc(ddTimeLeft(r.at))}${r.how ? ' &bull; ' + esc(r.how) : ''}</p>
-                        </div>
-                    </div>
-                    <div class="mt-2 flex flex-wrap items-center gap-2 text-xs">
-                        ${r.absent
-                            ? '<span class="px-2 py-0.5 rounded-full bg-amber-50 border border-amber-200 text-amber-700 font-semibold">Did not perform</span>'
-                            : r.score
-                                ? `<span class="px-2 py-0.5 rounded-full bg-brand-50 border border-brand-200 text-brand-700 font-semibold"><i class="fa-solid fa-star text-[10px] mr-1"></i>Marks: ${esc(r.score)}</span>`
-                                : '<span class="px-2 py-0.5 rounded-full bg-gray-100 text-gray-500 font-semibold">No marks given</span>'}
-                    </div>
-                    ${r.remark ? `<p class="mt-2 text-xs text-gray-700 bg-gray-50 border border-gray-200 rounded-lg p-2"><span class="font-semibold text-gray-500">Remark:</span> ${esc(r.remark)}</p>` : ''}
-                </div>`).join('')}
+    const list = Object.values(groups).sort((a, b) => b.latest - a.latest);
+    if (sub) sub.textContent = `${log.length} deleted assignment${log.length === 1 ? '' : 's'} in the last 24 hours \u2022 view only`;
+    body.innerHTML = list.map(g => {
+        const p = g.mKey.split('-').map(Number);
+        const dateTxt = new Date(p[0], p[1] - 1, g.day).toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' });
+        const rows = g.items.map(e => {
+            const hasScore = e.score !== null && e.score !== undefined;
+            const status = e.absent
+                ? '<span class="px-2 py-0.5 rounded-md bg-red-100 text-red-600 text-[10px] font-bold uppercase">Not performed</span>'
+                : (hasScore ? `<span class="px-2 py-0.5 rounded-md bg-brand-100 text-brand-900 text-[11px] font-bold whitespace-nowrap">${fmtScore(e.score)}/5 <span class="text-amber-500">${starsHtml(e.score)}</span></span>`
+                            : '<span class="text-[11px] text-gray-400">No score</span>');
+            const remark = e.remark ? `<p class="text-xs text-gray-600 mt-1 break-words"><i class="fa-regular fa-comment-dots text-gray-400 mr-1"></i>${esc(e.remark)}</p>` : '<p class="text-[11px] text-gray-400 mt-1">No remark</p>';
+            return `<div class="p-2.5 bg-gray-50 border border-gray-200 rounded-xl">
+                <div class="flex items-center justify-between gap-2"><p class="text-sm font-bold text-gray-900 truncate">${esc(e.name)}</p>${status}</div>
+                ${remark}
+            </div>`;
+        }).join('');
+        return `<div class="border border-gray-200 rounded-2xl p-3 bg-white">
+            <div class="flex items-start justify-between gap-2 mb-2">
+                <div class="min-w-0"><p class="text-sm font-bold text-gray-900 truncate">${esc(g.dutyName)}</p><p class="text-xs text-gray-500">${esc(dateTxt)}</p></div>
+                <div class="text-right shrink-0"><p class="text-[11px] font-semibold text-red-500">Deleted ${esc(agoText(g.latest))}</p><p class="text-[10px] text-gray-400">${esc(g.items[0].how || '')}</p></div>
             </div>
-        </div>`).join('');
+            <div class="space-y-1.5">${rows}</div>
+        </div>`;
+    }).join('');
 }
 
 /* ================= CLEAR DUTIES & UNDO ================= */
@@ -1253,12 +1254,11 @@ function executeClearDuties() {
     if (!appData.ratings) appData.ratings = {};
     if (!appData.absences) appData.absences = {};
 
-    pruneDeleted();
     if (scope === 'week') {
         const wIdx = parseInt(document.getElementById('clearWeekSelect').value);
         const weeks = getWeeksForMonth(currentYear, currentMonth);
         const targetWeekDays = weeks[wIdx] || [];
-        recordDeletedSlots(mKey, null, targetWeekDays.map(d => d.getDate()), 'Clear duties (week)');
+        logDeletedFromMonth(mKey, new Set(targetWeekDays.map(dObj => dObj.getDate())), 'Cleared (week)');
 
         CLEAR_FIELDS.forEach(field => {
             const monthMap = appData[field][mKey];
@@ -1270,14 +1270,14 @@ function executeClearDuties() {
         });
         showUndoToast(`Cleared Week ${wIdx + 1} duties.`);
     } else if (scope === 'month') {
-        recordDeletedSlots(mKey, null, null, 'Clear duties (month)');
+        logDeletedFromMonth(mKey, null, 'Cleared (month)');
         appData.assignments[mKey] = {};
         appData.duties.forEach(duty => { appData.assignments[mKey][duty.id] = {}; });
         appData.ratings[mKey] = {};
         appData.absences[mKey] = {};
         showUndoToast(`Cleared entire month duties.`);
     } else if (scope === 'all') {
-        Object.keys(appData.assignments || {}).forEach(mk => recordDeletedSlots(mk, null, null, 'Clear duties (all)'));
+        Object.keys(appData.assignments || {}).forEach(mk => logDeletedFromMonth(mk, null, 'Cleared (all months)'));
         appData.assignments = {};
         appData.ratings = {};
         appData.absences = {};
@@ -1578,8 +1578,6 @@ function deleteDuty(idx) {
     if (!confirm("Delete this duty? Its assignments, scores and absence marks will be removed.")) return;
     const removed = appData.duties[idx];
     if (!removed) return;
-    pruneDeleted();
-    Object.keys(appData.assignments || {}).forEach(mk => recordDeletedSlots(mk, [removed.id], null, 'Duty deleted'));
     appData.duties.splice(idx, 1);
     // Remove only this duty's data - every other duty keeps its ID, so nothing needs re-numbering
     ['assignments', 'ratings', 'absences'].forEach(field => {
@@ -1708,7 +1706,8 @@ function renderCleanTable() {
             const list = (appData.assignments[cellKey] && appData.assignments[cellKey][duty.id] && appData.assignments[cellKey][duty.id][dateNum]) || [];
             const names = list.map(n => esc(studentName(n))).join(', ');
             const holidayCell = isHolidayDate(dObj.getFullYear(), dObj.getMonth(), dateNum);
-            html += `<td class="p-3 border-r text-sm text-gray-700 whitespace-nowrap${isPad(dObj) ? ' pad-day' : ''}">${names || (holidayCell ? '<span class="text-red-500 font-semibold">Holiday</span>' : '-')}</td>`;
+            const noPdpCell = !holidayCell && isNoPdpDate(dObj.getFullYear(), dObj.getMonth(), dateNum);
+            html += `<td class="p-3 border-r text-sm text-gray-700 whitespace-nowrap${isPad(dObj) ? ' pad-day' : ''}">${names || (holidayCell ? '<span class="text-red-500 font-semibold">Holiday</span>' : (noPdpCell ? '<span class="text-indigo-500 font-semibold">No PDP</span>' : '-'))}</td>`;
         });
         html += `</tr>`;
     });
@@ -1757,7 +1756,7 @@ function exportCSV() {
     for (let i = 0; i < count; i++) { months.push({ y, m, mKey: getMonthKey(y, m) }); m++; if (m > 11) { m = 0; y++; } }
     const wantA = type !== 'performance', wantP = type !== 'assignments';
 
-    const rows = [], holi = [], over = [];
+    const rows = [], holi = [], over = [], nop = [];
     months.forEach(({ y, m, mKey }) => {
         const amap = (appData.assignments || {})[mKey] || {};
         const days = new Set();
@@ -1771,8 +1770,8 @@ function exportCSV() {
                     let status = '', score = '', remark = '';
                     if (wantP) {
                         const r = rat[sid];
-                        if (abs.includes(sid)) status = 'Not performed';
-                        else if (r && r.score) { status = 'Performed'; score = r.score; remark = String(r.remark || '').replace(/[\r\n]+/g, ' '); }
+                        if (abs.includes(sid)) { status = 'Not performed'; remark = String((rat[sid] && rat[sid].remark) || '').replace(/[\r\n]+/g, ' '); }
+                        else if (r && r.score !== null && r.score !== undefined) { status = 'Performed'; score = r.score; remark = String(r.remark || '').replace(/[\r\n]+/g, ' '); }
                     }
                     if (!wantA && !status) return;               // performance-only: skip students with no score / not-performed mark
                     rows.push([csvDateStr(y, m, day), duty.name, studentName(sid), status, score, remark]);
@@ -1784,6 +1783,7 @@ function exportCSV() {
             if (new Date(y, m, d).getDay() === 0) continue;
             if (isHolidayDate(y, m, d)) holi.push(csvDateStr(y, m, d));
             if ((appData.workingOverrides || []).includes(isoOf(y, m, d))) over.push(csvDateStr(y, m, d));
+            if (isNoPdpDate(y, m, d)) nop.push(csvDateStr(y, m, d));
         }
     });
     if (!rows.length && !holi.length) { alert('There is nothing to export for that range.'); return; }
@@ -1801,6 +1801,7 @@ function exportCSV() {
         ['Exported on', new Date().toLocaleString('en-GB')],
         ['Holidays', holi.join('; ')],
         ['Working-day overrides', over.join('; ')],
+        ['No PDP days', nop.join('; ')],
         [],
         ['Date', 'Duty', 'Student', 'Status', 'Score', 'Remark']
     ].concat(rows);
@@ -1858,10 +1859,10 @@ function parseLegacyGrid(lines) {
         colDates.forEach((dt, c) => {
             if (!dt) return;
             (cols[c + 1] || '').split(';').map(s => s.trim()).filter(Boolean).forEach(n =>
-                records.push({ year: dt.year, month: dt.month, day: dt.day, mKey: dt.mKey, duty, student: n, status: '', score: 0, remark: '' }));
+                records.push({ year: dt.year, month: dt.month, day: dt.day, mKey: dt.mKey, duty, student: n, status: '', score: null, remark: '' }));
         });
     }
-    return { meta: {}, records, holidays: [], overrides: [], legacy: true };
+    return { meta: {}, records, holidays: [], overrides: [], noPdp: [], legacy: true };
 }
 
 function parseImportText(text) {
@@ -1888,12 +1889,12 @@ function parseImportText(text) {
         const c = parseCSVLine(lines[i]);
         const dt = parseCSVDate(c[0] || '');
         if (!dt || !c[1] || !c[2]) { bad++; continue; }
-        let score = parseInt(c[4], 10);
-        if (!(score >= 1 && score <= 5)) score = 0;
+        let score = parseFloat(c[4]);
+        score = (c[4] !== '' && score >= 0 && score <= 5) ? Math.round(score * 2) / 2 : null;      // 0-5 in steps of 0.5; null = no score
         records.push({ year: dt.year, month: dt.month, day: dt.day, mKey: dt.mKey, duty: c[1], student: c[2], status: (c[3] || '').toLowerCase(), score, remark: c[5] || '' });
     }
     const dates = s => (s || '').split(';').map(x => parseCSVDate(x.trim())).filter(Boolean);
-    return { meta, records, bad, holidays: dates(meta['holidays']), overrides: dates(meta['working-day overrides']) };
+    return { meta, records, bad, holidays: dates(meta['holidays']), overrides: dates(meta['working-day overrides']), noPdp: dates(meta['no pdp days']) };
 }
 
 function importCSV() {
@@ -1906,7 +1907,7 @@ function importCSV() {
         if (res.error) { alert(res.error); return; }
         const months = new Set();
         res.records.forEach(r => months.add(r.mKey));
-        res.holidays.concat(res.overrides).forEach(h => months.add(h.mKey));
+        res.holidays.concat(res.overrides, res.noPdp || []).forEach(h => months.add(h.mKey));
         if (!months.size) { alert('No duty records or holidays were found in this file.'); return; }
         res.months = [...months].sort();
         res.fileName = file.name;
@@ -1937,8 +1938,8 @@ function renderImportModal() {
     const P = pendingImport, m = P.meta || {};
     const cur = currentProfile || {};
     const fileProfile = m['profile name'] ? `${esc(m['profile name'])} (@${esc(m['profile id'] || '')})` : '';
-    const hasPerf = P.records.some(r => r.status || r.score);
-    const hasHol = (P.holidays.length + P.overrides.length) > 0;
+    const hasPerf = P.records.some(r => r.status || (r.score !== null && r.score !== undefined));
+    const hasHol = (P.holidays.length + P.overrides.length + (P.noPdp || []).length) > 0;
     const counts = {};
     P.records.forEach(r => { counts[r.mKey] = (counts[r.mKey] || 0) + 1; });
 
@@ -1970,7 +1971,7 @@ function renderImportModal() {
             <div class="space-y-1.5">
                 ${chk('impAssign', 'Assignments (who did which duty)', P.records.length > 0, P.records.length === 0)}
                 ${chk('impPerf', 'Performance (scores, remarks, not-performed)', hasPerf, !hasPerf)}
-                ${chk('impHol', 'Holidays marked', hasHol, !hasHol)}
+                ${chk('impHol', 'Holidays and No PDP days', hasHol, !hasHol)}
             </div>
         </div>
         ${(unknownStudents.length || unknownDuties.length) ? `<div class="p-3 rounded-xl bg-amber-50 border border-amber-200 text-xs text-amber-900 space-y-1.5">
@@ -2013,7 +2014,7 @@ function updateImportPreview() {
         const ex = getSlot('assignments', r.mKey, did, r.day, []);
         const key = r.mKey + '|' + did + '|' + r.day;
         if (o.incA && ex.length && !seen.has(key)) { seen.add(key); slotConf++; }
-        if (o.incP && (r.status || r.score)) {
+        if (o.incP && (r.status || (r.score !== null && r.score !== undefined))) {
             const id = lookupStudent(r.student);
             if (id && ex.includes(id) && (getSlot('ratings', r.mKey, did, r.day, {})[id] || getSlot('absences', r.mKey, did, r.day, []).includes(id))) perfConf++;
         }
@@ -2094,13 +2095,13 @@ function applyImport() {
             }
             if (o.incP) {
                 s.recs.forEach(r => {
-                    if (!r.status && !r.score) return;
+                    if (!r.status && (r.score === null || r.score === undefined)) return;
                     const id = lookupStudent(r.student);
                     if (!id || !final.includes(id)) { st.notAssigned++; return; }
                     const had = !!rObj[id] || xArr.includes(id);
                     if (had && o.mode !== 'overwrite') { st.perfSkipped++; return; }
-                    if (/not\s*perf|absent/.test(r.status)) { delete rObj[id]; if (!xArr.includes(id)) xArr.push(id); }
-                    else if (r.score) { rObj[id] = { score: r.score, remark: r.remark || '' }; xArr = xArr.filter(x => x !== id); }
+                    if (/not\s*perf|absent/.test(r.status)) { if (r.remark) rObj[id] = { score: null, remark: r.remark }; else delete rObj[id]; if (!xArr.includes(id)) xArr.push(id); }
+                    else if (r.score !== null && r.score !== undefined) { rObj[id] = { score: r.score, remark: r.remark || '' }; xArr = xArr.filter(x => x !== id); }
                     else return;
                     st.perf++;
                 });
@@ -2132,6 +2133,16 @@ function applyImport() {
         after.forEach(x => { if (!before.has(x)) st.holidays++; });
         appData.holidays = [...hs].sort();
         appData.workingOverrides = [...os].sort();
+
+        // No PDP days travel with the holidays
+        const ns = new Set(appData.noPdp || []);
+        if (o.mode === 'overwrite') [...ns].forEach(i => { if (inM(i)) ns.delete(i); });
+        (P.noPdp || []).forEach(h => {
+            if (!o.months.has(h.mKey) || new Date(h.year, h.month, h.day).getDay() === 0) return;
+            const iso = isoOf(h.year, h.month, h.day);
+            if (!hs.has(iso) && !isSecondSaturday(h.year, h.month, h.day)) ns.add(iso);
+        });
+        appData.noPdp = [...ns].sort();
     }
 
     const fi = document.getElementById('csvFileInput');
@@ -2329,7 +2340,7 @@ function collectStudentDutyStats(months) {
                 const dt = new Date(year, month, parseInt(dayNumStr, 10));
                 if (!inRange(dt)) return;
                 const obj = rmap[dutyId][dayNumStr] || {};
-                Object.keys(obj).forEach(sid => ensure(sid, dutyId).ratings.push({ d: dt, score: obj[sid].score, remark: obj[sid].remark || '' }));
+                Object.keys(obj).forEach(sid => { if (obj[sid] && obj[sid].score !== null && obj[sid].score !== undefined) ensure(sid, dutyId).ratings.push({ d: dt, score: obj[sid].score, remark: obj[sid].remark || '' }); });
             });
         });
     });
@@ -2507,7 +2518,7 @@ function openStudentDutyDetail(studentIdx, dutyIdx) {
                         <p class="text-xs font-bold text-gray-800"><i class="fa-regular fa-calendar mr-1.5 text-brand-500"></i>${fmt(r.d)}</p>
                         ${r.remark ? `<p class="text-[11px] text-gray-500 mt-1 italic">"${esc(r.remark)}"</p>` : ''}
                     </div>
-                    <span class="text-amber-500 text-xs font-bold whitespace-nowrap">${'\u2605'.repeat(r.score)}<span class="text-gray-300">${'\u2606'.repeat(5 - r.score)}</span> <span class="text-gray-400">${r.score}/5</span></span>
+                    <span class="text-amber-500 text-xs font-bold whitespace-nowrap">${starsHtml(r.score)} <span class="text-gray-400">${fmtScore(r.score)}/5</span></span>
                 </div>`).join('') + `</div>`;
         } else {
             html += `<div class="text-xs text-gray-400 italic p-2">No performance ratings for this duty in the selected range.</div>`;
@@ -2521,7 +2532,7 @@ function openStudentDutyDetail(studentIdx, dutyIdx) {
         if (cell.done.length) {
             html += `<div class="flex flex-wrap mb-1">` + cell.done.map(dObj => {
                 const r = ratingByDate[dObj.getTime()];
-                return `<span class="inline-flex items-center bg-brand-50 border border-brand-100 text-brand-900 px-2.5 py-1 rounded-lg text-xs font-medium mr-1.5 mb-1.5" title="${r ? 'Rated ' + r.score + '/5' : 'Not rated'}"><i class="fa-regular fa-calendar mr-1.5 text-brand-500"></i>${fmt(dObj)}${r ? ` <span class="text-amber-500 ml-1">${'\u2605'.repeat(r.score)}</span>` : ''}</span>`;
+                return `<span class="inline-flex items-center bg-brand-50 border border-brand-100 text-brand-900 px-2.5 py-1 rounded-lg text-xs font-medium mr-1.5 mb-1.5" title="${r ? 'Rated ' + r.score + '/5' : 'Not rated'}"><i class="fa-regular fa-calendar mr-1.5 text-brand-500"></i>${fmt(dObj)}${r ? ` <span class="text-amber-500 ml-1">${starsHtml(r.score)}</span>` : ''}</span>`;
             }).join('') + `</div>`;
         }
         if (cell.absent.length) {
@@ -2590,7 +2601,7 @@ function autoFillMonth() {
     lastStateBackup = JSON.parse(JSON.stringify(appData));
     const mKey = getMonthKey(currentYear, currentMonth);
     const days = getWorkingDaysForMonth(currentYear, currentMonth)
-        .filter(d => !isHolidayDate(d.getFullYear(), d.getMonth(), d.getDate()));
+        .filter(d => !isHolidayDate(d.getFullYear(), d.getMonth(), d.getDate()) && !isNoPdpDate(d.getFullYear(), d.getMonth(), d.getDate()));
 
     let filled = 0;
     days.forEach(dObj => {
@@ -2623,7 +2634,8 @@ function autoFillMonth() {
 
 let holCalYear = new Date().getFullYear();
 let holCalMonth = new Date().getMonth();
-let holDraft = { holidays: new Set(), overrides: new Set() };
+let holDraft = { holidays: new Set(), overrides: new Set(), noPdp: new Set() };
+let holMode = 'holiday';      // what a tap on a day marks: 'holiday' or 'nopdp'
 
 // Is this date a holiday according to a draft (same rule as isHolidayDate)?
 function draftIsHoliday(draft, y, m, d) {
@@ -2645,10 +2657,18 @@ function toggleDraftDay(draft, y, m, d) {
     }
 }
 
+// Is this date a No PDP day according to a draft? (a holiday always wins)
+function draftIsNoPdp(draft, y, m, d) {
+    if (new Date(y, m, d).getDay() === 0 || draftIsHoliday(draft, y, m, d)) return false;
+    return draft.noPdp.has(isoOf(y, m, d));
+}
+
 function openHolidaysModal() {
+    holMode = 'holiday';
     holDraft = {
         holidays: new Set(appData.holidays || []),
-        overrides: new Set(appData.workingOverrides || [])
+        overrides: new Set(appData.workingOverrides || []),
+        noPdp: new Set(appData.noPdp || [])
     };
     holCalYear = currentYear;
     holCalMonth = currentMonth;
@@ -2668,8 +2688,20 @@ function changeHolidayMonth(direction) {
     renderHolidayCalendar();
 }
 
+function setHolidayMode(mode) {
+    holMode = mode === 'nopdp' ? 'nopdp' : 'holiday';
+    renderHolidayCalendar();
+}
+
 function toggleHolidayDay(day) {
-    toggleDraftDay(holDraft, holCalYear, holCalMonth, day);
+    const iso = isoOf(holCalYear, holCalMonth, day);
+    if (holMode === 'nopdp') {
+        if (new Date(holCalYear, holCalMonth, day).getDay() === 0 || draftIsHoliday(holDraft, holCalYear, holCalMonth, day)) return;   // holidays / Sundays can't be No PDP
+        if (holDraft.noPdp.has(iso)) holDraft.noPdp.delete(iso); else holDraft.noPdp.add(iso);
+    } else {
+        toggleDraftDay(holDraft, holCalYear, holCalMonth, day);
+        if (draftIsHoliday(holDraft, holCalYear, holCalMonth, day)) holDraft.noPdp.delete(iso);   // a day can't be both
+    }
     renderHolidayCalendar();
 }
 
@@ -2677,19 +2709,36 @@ function renderHolidayCalendar() {
     const monthNames = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
     document.getElementById('holidayMonthLabel').textContent = `${monthNames[holCalMonth]} ${holCalYear}`;
 
+    // mode switch (Holiday / No PDP)
+    const onCls = holMode === 'nopdp' ? 'bg-indigo-500 text-white shadow' : 'bg-red-500 text-white shadow';
+    const offCls = 'bg-transparent text-gray-600 hover:bg-white';
+    const bH = document.getElementById('holModeHoliday'), bN = document.getElementById('holModeNoPdp');
+    if (bH && bN) {
+        const base = 'py-2 rounded-lg text-xs font-bold transition flex items-center justify-center space-x-1.5 ';
+        bH.className = base + (holMode === 'holiday' ? 'bg-red-500 text-white shadow' : offCls);
+        bN.className = base + (holMode === 'nopdp' ? 'bg-indigo-500 text-white shadow' : offCls);
+        bH.setAttribute('aria-pressed', holMode === 'holiday'); bN.setAttribute('aria-pressed', holMode === 'nopdp');
+    }
+    const help = document.getElementById('holModeHelp');
+    if (help) help.innerHTML = holMode === 'nopdp'
+        ? 'Tap the days on which the <b>regular PDP is not held</b> (school is open, but there is no assembly). No duties are assigned on these days. Holidays can\'t be changed in this mode.'
+        : 'Tap days to mark or unmark them as holidays - you can pick many days, and change months before saving. Sundays are always off. The <b>2nd Saturday</b> of each month is a holiday by default; tap it to make it a working day.';
+
     const daysInMonth = new Date(holCalYear, holCalMonth + 1, 0).getDate();
     const lead = (new Date(holCalYear, holCalMonth, 1).getDay() + 6) % 7;   // Monday-first grid
     const now = new Date();
     let html = '';
     for (let i = 0; i < lead; i++) html += '<div></div>';
 
-    const marked = [];
+    const marked = [], noPdpMarked = [];
     for (let d = 1; d <= daysInMonth; d++) {
         const isSun = new Date(holCalYear, holCalMonth, d).getDay() === 0;
         const second = isSecondSaturday(holCalYear, holCalMonth, d);
         const hol = !isSun && draftIsHoliday(holDraft, holCalYear, holCalMonth, d);
+        const nop = !isSun && !hol && draftIsNoPdp(holDraft, holCalYear, holCalMonth, d);
         const isToday = d === now.getDate() && holCalMonth === now.getMonth() && holCalYear === now.getFullYear();
         if (hol) marked.push(d);
+        if (nop) noPdpMarked.push(d);
 
         if (isSun) {
             html += `<div class="aspect-square rounded-xl bg-gray-100 text-gray-300 flex items-center justify-center text-xs sm:text-sm font-semibold select-none" title="Sunday - always off">${d}</div>`;
@@ -2697,14 +2746,19 @@ function renderHolidayCalendar() {
         }
         let label = '';
         if (hol) label = second && !holDraft.holidays.has(isoOf(holCalYear, holCalMonth, d)) ? '2nd Sat' : 'Off';
+        else if (nop) label = 'No PDP';
         else if (second) label = 'Open';
+        const locked = holMode === 'nopdp' && hol;                      // holidays can't be edited while marking No PDP
         const cls = hol
-            ? 'bg-red-500 text-white border-red-500 shadow-sm'
-            : 'bg-white text-gray-800 border-gray-200 hover:bg-brand-50 hover:border-brand-500';
-        html += `<button type="button" onclick="toggleHolidayDay(${d})" aria-pressed="${hol}" aria-label="${d} ${monthNames[holCalMonth]}${hol ? ', holiday' : ''}"
+            ? 'bg-red-500 text-white border-red-500 shadow-sm' + (locked ? ' opacity-50 cursor-not-allowed' : '')
+            : nop
+                ? 'bg-indigo-500 text-white border-indigo-500 shadow-sm'
+                : (holMode === 'nopdp' ? 'bg-white text-gray-800 border-gray-200 hover:bg-indigo-50 hover:border-indigo-500' : 'bg-white text-gray-800 border-gray-200 hover:bg-brand-50 hover:border-brand-500');
+        const lblCls = hol ? 'text-red-100' : (nop ? 'text-indigo-100' : 'text-gray-400');
+        html += `<button type="button" onclick="toggleHolidayDay(${d})" ${locked ? 'disabled' : ''} aria-pressed="${hol || nop}" aria-label="${d} ${monthNames[holCalMonth]}${hol ? ', holiday' : (nop ? ', no PDP' : '')}"
             class="aspect-square rounded-xl border flex flex-col items-center justify-center leading-none transition focus:outline-none focus:ring-2 focus:ring-brand-500 ${cls} ${isToday ? 'ring-2 ring-brand-500' : ''}">
             <span class="text-xs sm:text-sm font-bold">${d}</span>
-            <span class="text-[8px] sm:text-[9px] font-semibold mt-0.5 h-2 ${hol ? 'text-red-100' : 'text-gray-400'}">${label}</span>
+            <span class="text-[8px] sm:text-[9px] font-semibold mt-0.5 h-2 ${lblCls}">${label}</span>
         </button>`;
     }
     document.getElementById('holidayCalendar').innerHTML = html;
@@ -2712,6 +2766,15 @@ function renderHolidayCalendar() {
     document.getElementById('holidaySummary').textContent = marked.length
         ? `${marked.length} holiday${marked.length > 1 ? 's' : ''} in ${monthNames[holCalMonth]}: ${marked.join(', ')}`
         : `No holidays in ${monthNames[holCalMonth]}.`;
+    const np = document.getElementById('noPdpSummary');
+    if (np) {
+        if (noPdpMarked.length || holMode === 'nopdp') {
+            np.classList.remove('hidden');
+            np.textContent = noPdpMarked.length
+                ? `${noPdpMarked.length} No PDP day${noPdpMarked.length > 1 ? 's' : ''} in ${monthNames[holCalMonth]}: ${noPdpMarked.join(', ')}`
+                : `No "No PDP" days in ${monthNames[holCalMonth]}.`;
+        } else np.classList.add('hidden');
+    }
 }
 
 // Save: write the draft into the real data, then (optionally) move duties off the NEW holidays
@@ -2729,13 +2792,18 @@ function saveHolidays() {
 
     const nextHolidays = [...holDraft.holidays].sort();
     const nextOverrides = [...holDraft.overrides].sort();
+    // No PDP days: only real working days (never Sundays or holidays)
+    const nextNoPdp = [...holDraft.noPdp].filter(iso => { const [y, m, d] = iso.split('-').map(Number); return draftIsNoPdp(holDraft, y, m - 1, d); }).sort();
+    const newlyNoPdp = nextNoPdp.filter(iso => { const [y, m, d] = iso.split('-').map(Number); return !isNoPdpDate(y, m - 1, d); });
     const unchanged = JSON.stringify(nextHolidays) === JSON.stringify([...(appData.holidays || [])].sort())
-        && JSON.stringify(nextOverrides) === JSON.stringify([...(appData.workingOverrides || [])].sort());
+        && JSON.stringify(nextOverrides) === JSON.stringify([...(appData.workingOverrides || [])].sort())
+        && JSON.stringify(nextNoPdp) === JSON.stringify([...(appData.noPdp || [])].sort());
     if (unchanged) { closeHolidaysModal(); return; }
 
     lastStateBackup = JSON.parse(JSON.stringify(appData));         // so Undo works
     appData.holidays = nextHolidays;
     appData.workingOverrides = nextOverrides;
+    appData.noPdp = nextNoPdp;
 
     let moved = 0;
     if (document.getElementById('holidayShiftChk').checked) {
@@ -2744,11 +2812,19 @@ function saveHolidays() {
             moved += shiftDayDuties(y, m - 1, d);
         });
     }
+    const noPdpChk = document.getElementById('noPdpShiftChk');
+    if (noPdpChk && noPdpChk.checked) {
+        newlyNoPdp.forEach(iso => {
+            const [y, m, d] = iso.split('-').map(Number);
+            moved += shiftDayDuties(y, m - 1, d);
+        });
+    }
 
     closeHolidaysModal();
     saveToStorage();
     renderPlanner();
-    showUndoToast(moved > 0 ? `Holidays saved - ${moved} assignment(s) moved to the next working day.` : 'Holidays saved.');
+    const what = newlyNoPdp.length || (appData.noPdp || []).length ? 'Holidays / No PDP days' : 'Holidays';
+    showUndoToast(moved > 0 ? `${what} saved - ${moved} assignment(s) moved to the next PDP day.` : `${what} saved.`);
 }
 
 /* Move every assignment / rating / absence of the given day to the next
@@ -2796,6 +2872,406 @@ function shiftDayDuties(y, m, d) {
         moved += srcNames.length;
     });
     return moved;
+}
+
+/* ================= SCORES & REMARKS TAB =================
+   Pick any day from the month view; every student assigned that day is listed under
+   their performance (duty) with score buttons 0-5 (steps of 0.5), a remark bar and a
+   "Not performed" button. It reads and writes the SAME data as the planner's editor:
+     ratings[month][duty][day][student] = { score, remark }   and   absences[...] = [student]
+   so both places always agree. Every tap is saved straight away (and synced to the cloud). */
+const PERF_VALUES = [0, 0.5, 1, 1.5, 2, 2.5, 3, 3.5, 4, 4.5, 5];
+const SC_MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+let scoresCal = { y: today.getFullYear(), m: today.getMonth() };      // month shown in the month view
+let scoresSel = null;                                                   // { y, m, d } day whose list is open
+let scoresEventsBound = false;
+const perfStash = {};            // a score kept in memory while "Not performed" is on, so un-marking brings it back
+let perfSaveTimer = null;
+
+function scoresDayKind(y, m, d) {
+    if (new Date(y, m, d).getDay() === 0) return 'sunday';
+    if (isHolidayDate(y, m, d)) return 'holiday';
+    if (isNoPdpDate(y, m, d)) return 'nopdp';
+    return 'pdp';
+}
+
+// Every (duty, student) pair assigned on that day, in duty order
+function scoresSlots(y, m, d) {
+    const mKey = getMonthKey(y, m), out = [];
+    appData.duties.forEach(duty => {
+        const list = ((((appData.assignments || {})[mKey] || {})[duty.id]) || {})[d] || [];
+        [...new Set(list)].forEach(sid => out.push({ duty, sid }));
+    });
+    return out;
+}
+
+// What is saved for one student on one duty that day
+function perfEntry(y, m, d, dutyId, sid) {
+    const mKey = getMonthKey(y, m);
+    const r = (((((appData.ratings || {})[mKey] || {})[dutyId]) || {})[d] || {})[sid];
+    const abs = ((((appData.absences || {})[mKey] || {})[dutyId]) || {})[d] || [];
+    return {
+        score: (r && r.score !== null && r.score !== undefined) ? Number(r.score) : null,
+        remark: (r && r.remark) || '',
+        absent: abs.includes(sid)
+    };
+}
+
+function scoresDayStats(y, m, d) {
+    const slots = scoresSlots(y, m, d);
+    let scored = 0, absent = 0;
+    const perDuty = {};
+    slots.forEach(({ duty, sid }) => {
+        const e = perfEntry(y, m, d, duty.id, sid);
+        const done = e.absent || e.score !== null;
+        if (e.absent) absent++; else if (e.score !== null) scored++;
+        const p = perDuty[duty.id] || (perDuty[duty.id] = { total: 0, done: 0 });
+        p.total++; if (done) p.done++;
+    });
+    return { total: slots.length, scored, absent, done: scored + absent, perDuty };
+}
+
+// Writes score / remark / not-performed for one student (keeps the data tidy: empty entries are removed)
+function perfWrite(y, m, d, dutyId, sid, v) {
+    const mKey = getMonthKey(y, m);
+    if (!appData.ratings) appData.ratings = {};
+    if (!appData.absences) appData.absences = {};
+    if (!appData.ratings[mKey]) appData.ratings[mKey] = {};
+    if (!appData.ratings[mKey][dutyId]) appData.ratings[mKey][dutyId] = {};
+    if (!appData.absences[mKey]) appData.absences[mKey] = {};
+    if (!appData.absences[mKey][dutyId]) appData.absences[mKey][dutyId] = {};
+
+    const rObj = appData.ratings[mKey][dutyId][d] || (appData.ratings[mKey][dutyId][d] = {});
+    const remark = (v.remark || '').trim();
+    if ((v.score !== null && v.score !== undefined) || remark) rObj[sid] = { score: (v.score === undefined ? null : v.score), remark };
+    else delete rObj[sid];
+
+    let xs = appData.absences[mKey][dutyId][d] || [];
+    xs = xs.filter(x => x !== sid);
+    if (v.absent) xs.push(sid);
+    appData.absences[mKey][dutyId][d] = xs;
+}
+
+function perfTier(v) {       // colour of a chosen score
+    if (v < 2) return { solid: 'bg-rose-500 border-rose-500 text-white', soft: 'bg-rose-50 text-rose-600 border-rose-200', bar: 'border-l-rose-500' };
+    if (v < 3.5) return { solid: 'bg-amber-500 border-amber-500 text-white', soft: 'bg-amber-50 text-amber-700 border-amber-200', bar: 'border-l-amber-500' };
+    return { solid: 'bg-emerald-500 border-emerald-500 text-white', soft: 'bg-emerald-50 text-emerald-700 border-emerald-200', bar: 'border-l-emerald-500' };
+}
+
+function perfCardHTML(duty, sid, e) {
+    const st = getStudent(sid);
+    const name = studentName(sid);
+    const initials = name.split(' ').filter(Boolean).map(w => w[0]).slice(0, 2).join('').toUpperCase() || '?';
+    const archived = !appData.students.some(x => x.id === sid);
+    const scored = e.score !== null;
+    const accent = e.absent ? 'border-l-red-400' : (scored ? perfTier(e.score).bar : 'border-l-gray-300');
+    const chip = e.absent
+        ? `<span class="px-2.5 py-1 rounded-full text-[11px] font-bold border bg-red-50 text-red-600 border-red-200 whitespace-nowrap"><i class="fa-solid fa-user-xmark mr-1"></i>Not performed</span>`
+        : (scored
+            ? `<span class="px-2.5 py-1 rounded-full text-[11px] font-bold border whitespace-nowrap ${perfTier(e.score).soft}">${fmtScore(e.score)} <span class="opacity-60">/ 5</span></span>`
+            : `<span class="px-2.5 py-1 rounded-full text-[11px] font-bold border bg-gray-50 text-gray-400 border-gray-200 whitespace-nowrap">Not scored</span>`);
+
+    const btns = PERF_VALUES.map(v => {
+        const on = e.score === v;
+        const cls = on
+            ? `${perfTier(v).solid} shadow-md scale-[1.04]`
+            : 'bg-white text-gray-700 border-gray-200 hover:bg-gray-50 hover:border-gray-400 active:bg-gray-100';
+        return `<button type="button" data-act="score" data-v="${v}" ${e.absent ? 'disabled' : ''} aria-pressed="${on}" aria-label="Score ${fmtScore(v)} out of 5 for ${esc(name)}"
+            class="h-11 sm:h-10 rounded-xl border text-sm font-bold transition select-none focus:outline-none focus:ring-2 focus:ring-brand-500 ${cls} ${e.absent ? 'opacity-40 cursor-not-allowed' : ''}">${fmtScore(v)}</button>`;
+    }).join('');
+
+    return `
+    <div class="pf-card rounded-2xl border border-gray-200 border-l-4 ${accent} shadow-sm p-3 sm:p-4 transition ${e.absent ? 'bg-red-50/40' : 'bg-white'}" data-key="${esc(duty.id)}|${esc(sid)}">
+        <div class="flex items-center justify-between gap-3">
+            <div class="flex items-center gap-3 min-w-0">
+                <span class="w-10 h-10 rounded-full bg-brand-100 text-brand-900 flex items-center justify-center text-xs font-bold shrink-0">${esc(initials)}</span>
+                <div class="min-w-0">
+                    <p class="font-bold text-gray-900 leading-tight break-words">${esc(name)}${archived ? ' <span class="text-[10px] font-semibold text-amber-600">archived</span>' : ''}</p>
+                    <p class="text-[11px] text-gray-400 truncate">${esc(st ? st.class : '')}</p>
+                </div>
+            </div>
+            <div class="shrink-0">${chip}</div>
+        </div>
+        <div class="grid grid-cols-6 sm:grid-cols-11 gap-1.5 mt-3" role="group" aria-label="Score for ${esc(name)}">${btns}</div>
+        <div class="flex items-center gap-2 mt-3">
+            <div class="relative flex-1 min-w-0">
+                <i class="fa-regular fa-comment-dots absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 text-sm pointer-events-none"></i>
+                <input type="text" class="pf-remark w-full h-11 sm:h-10 border border-gray-300 rounded-xl pl-9 pr-3 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500" maxlength="200"
+                    value="${esc(e.remark)}" placeholder="${e.absent ? 'Reason (optional)' : 'Remark (optional)'}" aria-label="Remark for ${esc(name)}" enterkeyhint="done" autocomplete="off">
+            </div>
+            <button type="button" data-act="np" aria-pressed="${e.absent}" title="${e.absent ? 'Tap to undo' : 'This student did not perform'}"
+                class="h-11 sm:h-10 px-3 sm:px-4 rounded-xl border text-xs font-bold whitespace-nowrap transition flex items-center gap-1.5 focus:outline-none focus:ring-2 focus:ring-red-300 ${e.absent ? 'bg-red-500 text-white border-red-500 shadow' : 'bg-white text-red-500 border-red-200 hover:bg-red-50'}">
+                <i class="fa-solid fa-user-xmark"></i><span>Not performed</span>
+            </button>
+        </div>
+    </div>`;
+}
+
+function scoresHeaderHTML() {
+    const { y, m, d } = scoresSel;
+    const dt = new Date(y, m, d);
+    const kind = scoresDayKind(y, m, d);
+    const title = dt.toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+    const isToday = (() => { const n = new Date(); return n.getFullYear() === y && n.getMonth() === m && n.getDate() === d; })();
+    let summary = '';
+    if (kind === 'pdp') {
+        const st = scoresDayStats(y, m, d);
+        if (st.total) {
+            const pct = Math.round(st.done / st.total * 100);
+            const left = st.total - st.done;
+            summary = `
+            <div class="mt-3">
+                <div class="flex flex-wrap items-center gap-1.5 text-[11px] font-bold">
+                    <span class="px-2 py-0.5 rounded-full bg-gray-100 text-gray-600">${st.total} student${st.total > 1 ? 's' : ''}</span>
+                    <span class="px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700">${st.scored} scored</span>
+                    ${st.absent ? `<span class="px-2 py-0.5 rounded-full bg-red-50 text-red-600">${st.absent} not performed</span>` : ''}
+                    ${left ? `<span class="px-2 py-0.5 rounded-full bg-amber-50 text-amber-700">${left} to do</span>` : `<span class="px-2 py-0.5 rounded-full bg-emerald-500 text-white"><i class="fa-solid fa-check mr-1"></i>All done</span>`}
+                </div>
+                <div class="mt-2 h-1.5 rounded-full bg-gray-100 overflow-hidden"><div class="h-full ${left ? 'bg-amber-400' : 'bg-emerald-500'} transition-all" style="width:${pct}%"></div></div>
+            </div>`;
+        }
+    }
+    const tag = kind === 'holiday' ? '<span class="ml-2 px-2 py-0.5 rounded-full bg-red-100 text-red-600 text-[10px] font-bold align-middle">HOLIDAY</span>'
+        : kind === 'nopdp' ? '<span class="ml-2 px-2 py-0.5 rounded-full bg-indigo-100 text-indigo-600 text-[10px] font-bold align-middle">NO PDP</span>'
+        : kind === 'sunday' ? '<span class="ml-2 px-2 py-0.5 rounded-full bg-gray-100 text-gray-500 text-[10px] font-bold align-middle">SUNDAY</span>' : '';
+    return `
+    <div class="bg-white/95 backdrop-blur rounded-2xl border border-gray-200 shadow-sm p-4">
+        <div class="flex items-center justify-between gap-3">
+            <div class="min-w-0">
+                <p class="text-[10px] font-bold uppercase tracking-wider text-brand-600">${isToday ? 'Today' : 'Scores & remarks'}</p>
+                <h3 class="text-base sm:text-lg font-bold text-gray-900 leading-snug">${esc(title)}${tag}</h3>
+            </div>
+            <div class="flex items-center gap-2 shrink-0">
+                <button onclick="scoresStepDay(-1)" class="w-10 h-10 flex items-center justify-center rounded-xl border border-gray-300 hover:bg-gray-100 transition" aria-label="Previous PDP day" title="Previous PDP day"><i class="fa-solid fa-chevron-left text-xs"></i></button>
+                <button onclick="scoresStepDay(1)" class="w-10 h-10 flex items-center justify-center rounded-xl border border-gray-300 hover:bg-gray-100 transition" aria-label="Next PDP day" title="Next PDP day"><i class="fa-solid fa-chevron-right text-xs"></i></button>
+            </div>
+        </div>${summary}
+    </div>`;
+}
+
+function scoresListHTML() {
+    const { y, m, d } = scoresSel;
+    const kind = scoresDayKind(y, m, d);
+    const msg = (icon, color, title, text) => `
+        <div class="bg-white rounded-2xl border border-gray-200 shadow-sm text-center py-14 px-6">
+            <i class="fa-solid ${icon} text-4xl ${color} mb-3 block"></i>
+            <p class="font-bold text-gray-800">${title}</p>
+            <p class="text-xs text-gray-500 mt-1">${text}</p>
+        </div>`;
+    if (kind === 'sunday') return msg('fa-bed', 'text-gray-300', 'Sunday', 'There is no PDP on Sundays.');
+    if (kind === 'holiday') return msg('fa-umbrella-beach', 'text-red-300', 'Holiday', 'There is no PDP on this day.');
+    if (kind === 'nopdp') return msg('fa-ban', 'text-indigo-300', 'No PDP on this day', 'The regular PDP is not held, so there is nothing to score.');
+
+    const slots = scoresSlots(y, m, d);
+    if (!slots.length) {
+        return msg('fa-user-plus', 'text-brand-500', 'No students assigned on this day', 'Assign students to the duties first, then come back to score them.')
+            .replace('</div>', `<button onclick="scoresOpenPlanner()" class="mt-4 inline-flex items-center gap-2 bg-brand-500 hover:bg-brand-600 text-white px-4 py-2.5 rounded-xl text-xs font-bold transition shadow"><i class="fa-solid fa-calendar-days"></i><span>Open monthly planner</span></button></div>`);
+    }
+    const st = scoresDayStats(y, m, d);
+    let html = '';
+    appData.duties.forEach(duty => {
+        const mine = slots.filter(x => x.duty.id === duty.id);
+        if (!mine.length) return;
+        const p = st.perDuty[duty.id] || { done: 0, total: mine.length };
+        html += `
+        <section>
+            <div class="flex items-center justify-between mb-2 px-1">
+                <h4 class="text-sm font-bold text-gray-900 flex items-center gap-2"><i class="fa-solid fa-star text-brand-500 text-xs"></i>${esc(duty.name)}</h4>
+                <span data-dcount="${esc(duty.id)}" class="text-[11px] font-bold text-gray-400">${p.done}/${p.total} done</span>
+            </div>
+            <div class="space-y-3">${mine.map(x => perfCardHTML(duty, x.sid, perfEntry(y, m, d, duty.id, x.sid))).join('')}</div>
+        </section>`;
+    });
+    return html;
+}
+
+function renderScoresCalendar() {
+    const { y, m } = scoresCal;
+    document.getElementById('scoresMonthLabel').textContent = `${SC_MONTHS[m]} ${y}`;
+    const dim = new Date(y, m + 1, 0).getDate();
+    const lead = (new Date(y, m, 1).getDay() + 6) % 7;
+    const now = new Date();
+    let html = '';
+    for (let i = 0; i < lead; i++) html += '<div></div>';
+    for (let d = 1; d <= dim; d++) {
+        const kind = scoresDayKind(y, m, d);
+        const sel = scoresSel && scoresSel.y === y && scoresSel.m === m && scoresSel.d === d;
+        const isToday = d === now.getDate() && m === now.getMonth() && y === now.getFullYear();
+        const base = 'relative aspect-square rounded-xl border flex flex-col items-center justify-center leading-none transition focus:outline-none focus:ring-2 focus:ring-brand-500';
+        const ring = isToday && !sel ? ' ring-2 ring-brand-500/70' : '';
+        if (kind === 'sunday') {
+            html += `<div class="aspect-square rounded-xl bg-gray-100 text-gray-300 flex items-center justify-center text-sm font-semibold select-none" title="Sunday">${d}</div>`;
+            continue;
+        }
+        let cls, inner = `<span class="text-sm font-bold">${d}</span>`, title = '';
+        if (kind === 'holiday') {
+            cls = sel ? 'bg-red-500 text-white border-red-500 shadow-md' : 'bg-red-50 text-red-500 border-red-100 hover:border-red-300';
+            inner += `<span class="text-[8px] font-bold mt-0.5 ${sel ? 'text-red-100' : 'text-red-400'}">Off</span>`; title = 'Holiday';
+        } else if (kind === 'nopdp') {
+            cls = sel ? 'bg-indigo-500 text-white border-indigo-500 shadow-md' : 'bg-indigo-50 text-indigo-600 border-indigo-100 hover:border-indigo-300';
+            inner += `<span class="text-[7px] font-bold mt-0.5 ${sel ? 'text-indigo-100' : 'text-indigo-400'}">No PDP</span>`; title = 'No PDP';
+        } else {
+            cls = sel ? 'bg-brand-500 text-white border-brand-500 shadow-md' : 'bg-white text-gray-800 border-gray-200 hover:bg-brand-50 hover:border-brand-500';
+            const st = scoresDayStats(y, m, d);
+            if (st.total) {
+                const pct = Math.max(8, Math.round(st.done / st.total * 100));
+                const col = st.done === st.total ? 'bg-emerald-500' : (st.done ? 'bg-amber-400' : 'bg-gray-300');
+                inner += `<span class="absolute left-1.5 right-1.5 bottom-1.5 h-1 rounded-full overflow-hidden ${sel ? 'bg-white/40' : 'bg-gray-200'}"><span class="block h-full ${st.done ? col : ''}" style="width:${st.done ? pct : 0}%"></span></span>`;
+                title = `${st.done} of ${st.total} done`;
+            } else title = 'No students assigned';
+        }
+        html += `<button type="button" onclick="scoresSelectDay(${y}, ${m}, ${d})" aria-pressed="${!!sel}" aria-label="${d} ${SC_MONTHS[m]}${title ? ', ' + title : ''}" title="${title}" class="${base} ${cls}${ring}">${inner}</button>`;
+    }
+    document.getElementById('scoresCalendar').innerHTML = html;
+}
+
+function renderScoresDay() {
+    document.getElementById('scoresDayHeader').innerHTML = scoresHeaderHTML();
+    document.getElementById('scoresList').innerHTML = scoresListHTML();
+}
+
+// Update only what changed after a tap (keeps scroll position and typing intact)
+function scoresRefreshAfterChange(dutyId, sid) {
+    const { y, m, d } = scoresSel;
+    const key = dutyId + '|' + sid;
+    document.querySelectorAll('#scoresList .pf-card').forEach(card => {
+        if (card.dataset.key === key) {
+            const duty = getDuty(dutyId);
+            if (duty) card.outerHTML = perfCardHTML(duty, sid, perfEntry(y, m, d, dutyId, sid));
+        }
+    });
+    const st = scoresDayStats(y, m, d);
+    document.querySelectorAll('#scoresList [data-dcount]').forEach(el => {
+        const p = st.perDuty[el.dataset.dcount];
+        if (p) el.textContent = `${p.done}/${p.total} done`;
+    });
+    document.getElementById('scoresDayHeader').innerHTML = scoresHeaderHTML();
+    renderScoresCalendar();
+}
+
+function perfQueueSave() {            // for typing: save shortly after the last key
+    clearTimeout(perfSaveTimer);
+    perfSaveTimer = setTimeout(() => { perfSaveTimer = null; saveToStorage(); }, 350);
+}
+function perfFlushSave() {
+    if (perfSaveTimer) { clearTimeout(perfSaveTimer); perfSaveTimer = null; saveToStorage(); }
+}
+
+function perfSetScore(dutyId, sid, v) {
+    const { y, m, d } = scoresSel;
+    const e = perfEntry(y, m, d, dutyId, sid);
+    if (e.absent || !PERF_VALUES.includes(v)) return;
+    perfWrite(y, m, d, dutyId, sid, { score: e.score === v ? null : v, remark: e.remark, absent: false });   // tap the same mark again to clear it
+    saveToStorage();
+    scoresRefreshAfterChange(dutyId, sid);
+}
+
+function perfToggleAbsent(dutyId, sid) {
+    const { y, m, d } = scoresSel;
+    const e = perfEntry(y, m, d, dutyId, sid);
+    const key = `${getMonthKey(y, m)}|${dutyId}|${d}|${sid}`;
+    if (!e.absent) {
+        if (e.score !== null) perfStash[key] = e.score;                 // remember the mark in case it was tapped by mistake
+        perfWrite(y, m, d, dutyId, sid, { score: null, remark: e.remark, absent: true });
+    } else {
+        const back = (key in perfStash) ? perfStash[key] : null;
+        delete perfStash[key];
+        perfWrite(y, m, d, dutyId, sid, { score: back, remark: e.remark, absent: false });
+    }
+    saveToStorage();
+    scoresRefreshAfterChange(dutyId, sid);
+}
+
+function perfSetRemark(dutyId, sid, text) {
+    const { y, m, d } = scoresSel;
+    const e = perfEntry(y, m, d, dutyId, sid);
+    perfWrite(y, m, d, dutyId, sid, { score: e.score, remark: text, absent: e.absent });
+    perfQueueSave();
+}
+
+function bindScoresEvents() {
+    if (scoresEventsBound) return;
+    const list = document.getElementById('scoresList');
+    if (!list) return;
+    scoresEventsBound = true;
+    const keyOf = el => { const c = el.closest('.pf-card'); return c ? c.dataset.key.split('|') : null; };
+    list.addEventListener('click', ev => {
+        const b = ev.target.closest('[data-act]');
+        if (!b || b.disabled || !scoresSel) return;
+        const k = keyOf(b); if (!k) return;
+        if (b.dataset.act === 'score') perfSetScore(k[0], k[1], parseFloat(b.dataset.v));
+        else if (b.dataset.act === 'np') perfToggleAbsent(k[0], k[1]);
+    });
+    list.addEventListener('input', ev => {
+        if (!ev.target.classList.contains('pf-remark') || !scoresSel) return;
+        const k = keyOf(ev.target); if (k) perfSetRemark(k[0], k[1], ev.target.value);
+    });
+    list.addEventListener('keydown', ev => { if (ev.key === 'Enter' && ev.target.classList.contains('pf-remark')) ev.target.blur(); });
+    list.addEventListener('focusout', ev => { if (ev.target.classList.contains('pf-remark')) { perfFlushSave(); if (scoresSel) { const k = keyOf(ev.target); if (k) { document.getElementById('scoresDayHeader').innerHTML = scoresHeaderHTML(); } } } });
+}
+
+function scoresScrollToList() {
+    if (window.innerWidth >= 1280) return;                  // side-by-side layout: nothing to scroll
+    const h = document.getElementById('scoresDayHeader');
+    if (h && h.scrollIntoView) h.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function scoresSelectDay(y, m, d) {
+    perfFlushSave();
+    scoresSel = { y, m, d };
+    scoresCal = { y, m };
+    renderScoresCalendar();
+    renderScoresDay();
+    scoresScrollToList();
+}
+
+function scoresChangeMonth(dir) {
+    let { y, m } = scoresCal;
+    m += dir;
+    if (m > 11) { m = 0; y++; } else if (m < 0) { m = 11; y--; }
+    scoresCal = { y, m };
+    renderScoresCalendar();
+}
+
+// Previous / next day on which PDP is actually held (skips Sundays, holidays and No PDP days)
+function scoresStepDay(dir) {
+    if (!scoresSel) return;
+    const t = new Date(scoresSel.y, scoresSel.m, scoresSel.d);
+    for (let i = 0; i < 400; i++) {
+        t.setDate(t.getDate() + dir);
+        if (scoresDayKind(t.getFullYear(), t.getMonth(), t.getDate()) === 'pdp') {
+            scoresSelectDay(t.getFullYear(), t.getMonth(), t.getDate());
+            return;
+        }
+    }
+}
+
+function scoresGoToday() {
+    const n = new Date();
+    scoresSelectDay(n.getFullYear(), n.getMonth(), n.getDate());
+}
+
+function scoresOpenPlanner() {
+    if (!scoresSel) return;
+    currentYear = scoresSel.y; currentMonth = scoresSel.m;
+    switchTab('planner');
+}
+
+function renderScoresTab() {
+    bindScoresEvents();
+    if (!scoresSel) {
+        // First visit: today, or - if today has no PDP - the most recent PDP day
+        const t = new Date();
+        for (let i = 0; i < 60; i++) {
+            if (scoresDayKind(t.getFullYear(), t.getMonth(), t.getDate()) === 'pdp') break;
+            t.setDate(t.getDate() - 1);
+        }
+        if (scoresDayKind(t.getFullYear(), t.getMonth(), t.getDate()) !== 'pdp') t.setTime(Date.now());
+        scoresSel = { y: t.getFullYear(), m: t.getMonth(), d: t.getDate() };
+        scoresCal = { y: scoresSel.y, m: scoresSel.m };
+    }
+    renderScoresCalendar();
+    renderScoresDay();
 }
 
 /* ================= SWAP TWO STUDENTS ================= */
@@ -2868,6 +3344,8 @@ function openTodayView() {
         body.innerHTML = `<div class="text-center py-12 text-gray-400"><i class="fa-solid fa-bed text-4xl mb-3 block"></i><p class="font-bold">No assembly today - it is Sunday.</p></div>`;
     } else if (isHolidayDate(y, m, d)) {
         body.innerHTML = `<div class="text-center py-12 text-red-400"><i class="fa-solid fa-umbrella-beach text-4xl mb-3 block"></i><p class="font-bold">Holiday today - no assembly.</p></div>`;
+    } else if (isNoPdpDate(y, m, d)) {
+        body.innerHTML = `<div class="text-center py-12 text-indigo-400"><i class="fa-solid fa-ban text-4xl mb-3 block"></i><p class="font-bold">No PDP today.</p></div>`;
     } else {
         const mKey = getMonthKey(y, m);
         let html = '';
@@ -2921,7 +3399,7 @@ function computeAllTimeStats() {
         if (!rmap) return;
         Object.values(rmap).forEach(daysMap => Object.values(daysMap || {}).forEach(obj => {
             Object.keys(obj || {}).forEach(sid => {
-                if (scoreSum[sid] !== undefined) { scoreSum[sid] += obj[sid].score; scoreCnt[sid]++; }
+                if (scoreSum[sid] !== undefined && obj[sid] && obj[sid].score !== null && obj[sid].score !== undefined) { scoreSum[sid] += obj[sid].score; scoreCnt[sid]++; }
             });
         }));
     });
@@ -3327,7 +3805,47 @@ function sgDeviceId() {                            // random id remembered in th
 }
 function sgMarkActivity() { if (!sgWarnAt) sgLast = Date.now(); }   // while the warning is on screen only "Stay logged in" counts
 
+/* ---- make sure the pop-ups exist (they normally come from index.html; if an older index.html is still deployed they are added here) ---- */
+function sgEnsureUI() {
+    if (!document.getElementById('lockNotice')) {
+        const card = document.getElementById('lockCard');
+        if (card && card.parentNode) {
+            const n = document.createElement('div');
+            n.id = 'lockNotice'; n.setAttribute('role', 'status');
+            n.className = 'hidden mb-3 text-xs font-semibold text-amber-800 bg-amber-50 border border-amber-200 rounded-2xl px-4 py-3 text-center';
+            card.parentNode.insertBefore(n, card);
+        }
+    }
+    if (!document.getElementById('sessionConflictModal')) {
+        const d = document.createElement('div');
+        d.id = 'sessionConflictModal';
+        d.className = 'no-print fixed inset-0 z-[110] bg-black/60 backdrop-blur-sm hidden flex items-center justify-center p-4';
+        d.setAttribute('role', 'alertdialog'); d.setAttribute('aria-modal', 'true');
+        d.innerHTML = `<div class="bg-white w-full max-w-sm rounded-2xl shadow-2xl border border-gray-200 overflow-hidden" style="max-height: 94vh; max-height: 94dvh; overflow-y: auto;">
+            <div class="p-4 border-b border-amber-200 bg-amber-50 flex items-center space-x-2"><i class="fa-solid fa-triangle-exclamation text-amber-500"></i><h3 id="scTitle" class="font-bold text-gray-900">Profile already in use</h3></div>
+            <div id="scBody" class="p-4 text-sm text-gray-700 space-y-3"></div>
+            <div class="p-3 sm:p-4 border-t border-gray-200 bg-gray-50 flex items-center justify-end gap-2">
+                <button id="scNoBtn" onclick="sgTakeoverNo()" class="px-4 py-2.5 border border-gray-300 rounded-xl text-sm font-semibold text-gray-700 hover:bg-gray-100">No, cancel</button>
+                <button id="scYesBtn" onclick="sgTakeoverYes()" class="bg-brand-500 hover:bg-brand-600 text-white px-4 py-2.5 rounded-xl text-sm font-bold transition shadow">Yes, log in here</button>
+            </div></div>`;
+        document.body.appendChild(d);
+    }
+    if (!document.getElementById('idleWarnModal')) {
+        const d = document.createElement('div');
+        d.id = 'idleWarnModal';
+        d.className = 'no-print fixed inset-0 z-[120] bg-black/60 backdrop-blur-sm hidden flex items-center justify-center p-4';
+        d.setAttribute('role', 'alertdialog'); d.setAttribute('aria-modal', 'true');
+        d.innerHTML = `<div class="bg-white w-full max-w-sm rounded-2xl shadow-2xl border border-gray-200 overflow-hidden text-center"><div class="p-6">
+            <div class="w-14 h-14 mx-auto rounded-full bg-amber-100 text-amber-600 flex items-center justify-center text-2xl"><i class="fa-solid fa-clock"></i></div>
+            <h3 id="idleWarnTitle" class="mt-3 font-bold text-gray-900 text-lg">Are you still there?</h3>
+            <p class="mt-1 text-sm text-gray-600">There has been no activity for 1 minute. You will be logged out in <b id="idleWarnCount">5</b> seconds.</p>
+            <button id="idleStayBtn" onclick="sgStay()" class="mt-5 w-full bg-brand-500 hover:bg-brand-600 text-white py-3 rounded-xl font-semibold text-sm transition shadow">Stay logged in</button></div></div>`;
+        document.body.appendChild(d);
+    }
+}
+
 function sgStart() {
+    sgEnsureUI();
     sgOut = false; sgLast = Date.now(); sgLastSent = 0; sgWarnAt = 0; sgBusy = false;
     if (!sgBound) {
         sgBound = true;
@@ -3398,6 +3916,7 @@ async function sgSendLogout(reason) {              // records the logout on the 
 /* ---- notices on the login screen ---- */
 function sgSetNotice(msg) { try { sessionStorage.setItem('pdp_notice', msg); } catch (e) {} }
 function sgShowNotice() {
+    sgEnsureUI();
     let m = '';
     try { m = sessionStorage.getItem('pdp_notice') || ''; sessionStorage.removeItem('pdp_notice'); } catch (e) {}
     const el = document.getElementById('lockNotice');
@@ -3408,6 +3927,7 @@ function sgHideNotice() { const el = document.getElementById('lockNotice'); if (
 /* ---- "this profile is already in use on another device" ---- */
 function sgAgo(sec) { return sec < 2 ? 'just now' : sec + ' seconds ago'; }
 function sgAskTakeover(p, pin, o) {
+    sgEnsureUI();
     o = o || {};
     sgPending = { profile: p, pin };
     const row = (k, v) => v ? `<div class="flex justify-between gap-3"><span class="text-gray-500">${k}</span><span class="font-semibold text-gray-900 text-right break-all">${esc(v)}</span></div>` : '';
@@ -3483,18 +4003,18 @@ function applyProfileToUI() {
 }
 
 /* ---------- Profile settings (details, PIN, admin tools) ---------- */
+let psTab = 'profile';   // 'profile' | 'signin' | 'others'
 function psMsg(text, ok) {
     const el = document.getElementById('psMsg');
     if (!el) return;
     el.textContent = text || '';
-    el.className = 'text-xs font-semibold min-h-[16px] ' + (ok ? 'text-green-600' : 'text-red-500');
+    el.className = 'px-4 py-1.5 text-xs font-semibold ' + (ok ? 'text-green-600' : 'text-red-500') + (text ? '' : ' hidden');
 }
-let psTab = 'profile';   // which tab of Profile settings is showing: 'profile' | 'signin' | 'others'
-function psSetTab(t) { psTab = t; renderProfileSettings(); }
+function setPsTab(t) { psTab = t; renderProfileSettings(); }
 function openProfileSettings() {
     if (!currentProfile) return;
-    psTab = 'profile';
     if (sidebarOpen && window.innerWidth < 1024) { sidebarOpen = false; applySidebarState(); }
+    psTab = 'profile';
     renderProfileSettings();
     document.getElementById('profileSettingsModal').classList.remove('hidden');
 }
@@ -3556,12 +4076,14 @@ function renderProfileSettings() {
             <button onclick="openDeleteProfile(${ownIdx})" class="text-sm font-semibold px-4 py-2.5 rounded-xl border border-red-200 text-red-600 hover:bg-red-50 transition"><i class="fa-solid fa-trash mr-2"></i>Delete this profile...</button>
         </div>`;
     }
-    const isAdmin = !!p.admin;
-    if (psTab === 'others' && !isAdmin) psTab = 'profile';
-    const tabs = [['profile', 'fa-id-card', 'My profile'], ['signin', 'fa-key', 'Sign in']].concat(isAdmin ? [['others', 'fa-users-gear', 'Profiles & PIN']] : []);
-    const tabBar = `<div class="flex gap-1 p-1 bg-gray-100 rounded-xl" role="tablist">${tabs.map(t => `<button role="tab" aria-selected="${psTab === t[0]}" onclick="psSetTab('${t[0]}')" class="flex-1 min-w-0 px-2 py-2 rounded-lg text-xs font-semibold transition truncate ${psTab === t[0] ? 'bg-white text-brand-600 shadow-sm' : 'text-gray-500 hover:text-gray-800'}"><i class="fa-solid ${t[1]} mr-1"></i>${t[2]}</button>`).join('')}</div>`;
-    let panel = '';
-    if (psTab === 'profile') panel = `
+    const tabDefs = [['profile', 'fa-id-card', 'My profile', 'My profile'], ['signin', 'fa-key', 'Sign in', 'Sign in']];
+    if (p.admin) tabDefs.push(['others', 'fa-user-shield', 'Profiles & PIN', 'Other profiles / Master PIN']);
+    if (!tabDefs.some(t => t[0] === psTab)) psTab = 'profile';
+    document.getElementById('profileSettingsTabs').innerHTML = `<div class="flex gap-1 px-3 pt-2 overflow-x-auto" role="tablist">${tabDefs.map(t => {
+        const on = psTab === t[0];
+        return `<button type="button" role="tab" aria-selected="${on}" onclick="setPsTab('${t[0]}')" class="whitespace-nowrap px-3 py-2 text-xs font-semibold rounded-t-lg border-b-2 transition ${on ? 'border-brand-500 text-brand-600 bg-brand-50' : 'border-transparent text-gray-500 hover:text-gray-800 hover:bg-gray-50'}"><i class="fa-solid ${t[1]} mr-1.5"></i><span class="sm:hidden">${t[2]}</span><span class="hidden sm:inline">${t[3]}</span></button>`;
+    }).join('')}</div><p id="psMsg" class="hidden"></p>`;
+    const secProfile = `
         <div>
             <h4 class="text-sm font-bold text-gray-900 mb-3"><i class="fa-solid fa-id-card text-brand-500 mr-2"></i>My details</h4>
             <div class="space-y-3">
@@ -3574,8 +4096,9 @@ function renderProfileSettings() {
                 <button onclick="saveProfileDetails()" class="${btn}">Save details</button>
             </div>
         </div>
-        ${danger}`;
-    else if (psTab === 'signin') panel = `
+        ${danger}
+    `;
+    const secSignin = `
         <div>
             <h4 class="text-sm font-bold text-gray-900 mb-3"><i class="fa-solid fa-key text-brand-500 mr-2"></i>Change PIN</h4>
             <div class="space-y-3">
@@ -3592,9 +4115,9 @@ function renderProfileSettings() {
             <p class="text-xs text-gray-500 mb-3">Where and when this profile was logged in or out. You are logged out automatically after 1 minute without activity.</p>
             <div id="psActivity"><p class="text-xs text-gray-400">Loading...</p></div>
         </div>
-`;
-    else panel = admin || '<p class="text-xs text-gray-400">Admin only.</p>';
-    document.getElementById('profileSettingsBody').innerHTML = tabBar + `<div class="space-y-5 mt-4">${panel}</div><p id="psMsg" class="text-xs font-semibold min-h-[16px] mt-3"></p>`;
+    `;
+    const body = psTab === 'signin' ? secSignin : (psTab === 'others' ? admin : secProfile);
+    document.getElementById('profileSettingsBody').innerHTML = body;
     if (psTab === 'signin') sgLoadActivity();
 }
 
