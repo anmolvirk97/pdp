@@ -828,9 +828,11 @@ function checkRepeatedWithin10Days(dutyId, year, month, dayNum, studentId) {
 }
 
 /* ================= CELL EDIT MODAL =================
-   Each slot: student picker + smart-suggest + score (1-5) + optional remark
-   + absent toggle. Names go to assignments; scores/remarks go to ratings;
-   absent flags go to absences. */
+   Student picker (tap a name to select / un-select) + smart-suggest + clear-all.
+   Names go to assignments. Scores / remarks / "not performed" are NOT edited here
+   (use the Scores & remarks tab); this editor only carries the existing ones along
+   for students who stay selected, and drops them for students who are removed. */
+let modalOrigMeta = {};   // meta each student had when the editor opened (so an accidental un-tap + re-tap loses nothing)
 
 function openCellModal(year, month, dayNum, dutyIdx) {
     const duty = appData.duties[dutyIdx];
@@ -855,11 +857,12 @@ function openCellModal(year, month, dayNum, dutyIdx) {
         const r = ratingCell[sid];
         return { score: r ? r.score : null, remark: r ? (r.remark || '') : '', absent: absentList.includes(sid) };
     });
+    modalOrigMeta = {};
+    existing.forEach((sid, i) => { modalOrigMeta[sid] = modalTempMeta[i]; });
 
     computeModalInfo();
     renderModalToolbar();
     renderModalGrid();
-    renderModalSelected();
     document.getElementById('modalGridWrap').scrollTop = 0;
     document.getElementById('cellModal').classList.remove('hidden');
 }
@@ -867,6 +870,7 @@ function openCellModal(year, month, dayNum, dutyIdx) {
 function cancelCellModal() {
     modalTempAssignments = [];
     modalTempMeta = [];
+    modalOrigMeta = {};
     document.getElementById('cellModal').classList.add('hidden');
     renderPlanner();
 }
@@ -874,6 +878,7 @@ function cancelCellModal() {
 function closeCellModal() {
     modalTempAssignments = [];
     modalTempMeta = [];
+    modalOrigMeta = {};
     document.getElementById('cellModal').classList.add('hidden');
     renderPlanner();
     saveToStorage();
@@ -999,61 +1004,50 @@ function renderModalGrid() {
             ${selected ? '<i class="fa-solid fa-circle-check text-brand-500 absolute top-2 right-2"></i>' : ''}
         </button>`;
     }).join('');
+    // Selected students no longer on the roster (archived): show them as tiles too, so they can still be un-selected
+    const rosterIds = new Set(appData.students.map(s => s.id));
+    modalTempAssignments.filter(id => !rosterIds.has(id)).forEach(id => {
+        const nm = studentName(id);
+        grid.insertAdjacentHTML('beforeend', `<button type="button" data-sid="${esc(String(id))}" onclick="modalToggleById(this.dataset.sid)" aria-pressed="true" title="${esc(nm)} (archived)" class="relative text-left p-2.5 pr-7 rounded-xl border transition min-h-[62px] flex flex-col justify-between bg-brand-50 border-brand-500 ring-2 ring-brand-500/40">
+            <span class="cm-name text-sm font-semibold text-gray-900 leading-tight">${esc(nm)}</span>
+            <span class="mt-1.5 text-[10px] font-semibold text-amber-600">archived</span>
+            <i class="fa-solid fa-circle-check text-brand-500 absolute top-2 right-2"></i>
+        </button>`);
+    });
+    updateModalClearBtn();
     wrap.scrollTop = keepScroll;
 }
 
-function renderModalSelected() {
-    const list = document.getElementById('modalSelectedList');
-    document.getElementById('modalSelectedCount').textContent = modalTempAssignments.length;
-    if (modalTempAssignments.length === 0) {
-        list.innerHTML = '<div class="text-xs text-gray-500 italic p-1" style="grid-column: 1 / -1;">No students selected yet. Tap a student above.</div>';
-        return;
-    }
-    list.innerHTML = modalTempAssignments.map((studentId, idx) => {
-        const meta = modalTempMeta[idx] || { score: null, remark: '', absent: false };
-        const onRoster = appData.students.some(s => s.id === studentId);
-        let scoreBtns = '';
-        for (let n = 1; n <= 5; n++) {
-            const on = meta.score === n;
-            scoreBtns += `<button type="button" onclick="setScoreForSlot(${idx}, ${n})" ${meta.absent ? 'disabled' : ''} class="cm-score-btn rounded-md text-xs font-bold transition ${meta.absent ? 'opacity-40 cursor-not-allowed ' : ''}${on ? 'bg-brand-500 text-white shadow' : 'bg-white border border-gray-300 text-gray-500 hover:border-brand-500 hover:text-brand-600'}" title="Score ${n}/5">${n}</button>`;
-        }
-        if (meta.score !== null && meta.score !== undefined && !(Number.isInteger(meta.score) && meta.score >= 1 && meta.score <= 5)) {
-            scoreBtns += `<span class="ml-1 px-1.5 py-0.5 rounded-md bg-brand-100 text-brand-900 text-[10px] font-bold whitespace-nowrap" title="Score given in the Scores & remarks tab">${fmtScore(meta.score)}/5</span>`;
-        }
-        return `
-            <div class="min-w-0 p-2.5 rounded-xl border transition ${meta.absent ? 'bg-red-50/60 border-red-300' : 'bg-white border-gray-200'}">
-                <div class="flex items-center justify-between gap-2">
-                    <p class="min-w-0 text-sm font-bold text-gray-900 truncate" title="${esc(studentName(studentId))}">${esc(studentName(studentId))}${onRoster ? '' : ' <span class="text-[10px] font-semibold text-amber-600 ml-1">archived</span>'}</p>
-                    <div class="flex items-center gap-1.5 shrink-0">
-                        <button type="button" onclick="toggleAbsentForSlot(${idx})" class="cm-flag-btn whitespace-nowrap text-[10px] font-bold rounded-lg border transition ${meta.absent ? 'bg-red-500 text-white border-red-500' : 'bg-white text-red-500 border-red-200 hover:bg-red-50'}" title="Student was absent or did not perform" aria-pressed="${meta.absent ? 'true' : 'false'}">${meta.absent ? 'NOT PERFORMED' : 'Not performed'}</button>
-                        <button type="button" onclick="removeStudentSlot(${idx})" class="cm-icon-btn flex items-center justify-center text-red-500 hover:bg-red-50 rounded-lg" aria-label="Remove student" title="Remove student from this duty"><i class="fa-solid fa-trash text-xs"></i></button>
-                    </div>
-                </div>
-                <div class="flex flex-wrap items-center gap-2 mt-2">
-                    <span class="hidden sm:inline text-[10px] text-gray-400 font-bold uppercase">Score</span>
-                    <div class="flex items-center gap-1">${scoreBtns}</div>
-                    <input type="text" value="${esc(meta.remark)}" oninput="setRemarkForSlot(${idx}, this.value)" placeholder="Remark (optional)" aria-label="Remark (optional)" class="flex-1 min-w-[90px] border border-gray-300 rounded-lg p-1.5 text-xs bg-white focus:outline-none focus:ring-2 focus:ring-brand-500">
-                </div>
-            </div>
-        `;
-    }).join('');
+function updateModalClearBtn() {
+    const n = modalTempAssignments.length;
+    const cnt = document.getElementById('modalSelectedCount');
+    const btn = document.getElementById('modalClearAllBtn');
+    if (cnt) cnt.textContent = n;
+    if (btn) btn.disabled = n === 0;
 }
 
-// Tap a student card: select them, or un-select if already selected
+// Tap a student tile: select them, or un-select if already selected
 function modalToggleStudent(i) {
     const st = appData.students[i];
-    if (!st) return;
-    const at = modalTempAssignments.indexOf(st.id);
+    if (st) modalToggleById(st.id);
+}
+function modalToggleById(id) {
+    const at = modalTempAssignments.indexOf(id);
     if (at >= 0) {
         modalTempAssignments.splice(at, 1);
         modalTempMeta.splice(at, 1);
     } else {
-        modalTempAssignments.push(st.id);
-        modalTempMeta.push({ score: null, remark: '', absent: false });
+        modalTempAssignments.push(id);
+        modalTempMeta.push(modalOrigMeta[id] ? Object.assign({}, modalOrigMeta[id]) : { score: null, remark: '', absent: false });
     }
     renderModalGrid();
-    renderModalSelected();
-    if (at < 0) { const w = document.getElementById('modalSelectedWrap'); w.scrollTop = w.scrollHeight; }
+}
+
+// Un-select every student for this duty (nothing is saved until "Save Changes")
+function modalClearAll() {
+    modalTempAssignments = [];
+    modalTempMeta = [];
+    renderModalGrid();
 }
 
 // Smart suggest: add the least-used student for this duty who is not selected yet
@@ -1065,26 +1059,6 @@ function suggestAddStudent() {
     modalToggleStudent(i);
     const card = document.getElementById('modalGrid').children[i];
     if (card && card.scrollIntoView) card.scrollIntoView({ block: 'nearest' });
-}
-
-function setScoreForSlot(idx, n) {
-    if (!modalTempMeta[idx]) return;
-    modalTempMeta[idx].score = (modalTempMeta[idx].score === n) ? null : n; // click again to clear
-    renderModalSelected();
-}
-function setRemarkForSlot(idx, val) {
-    if (modalTempMeta[idx]) modalTempMeta[idx].remark = val;
-}
-function toggleAbsentForSlot(idx) {
-    if (!modalTempMeta[idx]) return;
-    modalTempMeta[idx].absent = !modalTempMeta[idx].absent;
-    renderModalSelected();
-}
-function removeStudentSlot(slotIdx) {
-    modalTempAssignments.splice(slotIdx, 1);
-    modalTempMeta.splice(slotIdx, 1);
-    renderModalGrid();
-    renderModalSelected();
 }
 
 /* Wand button: fill this slot with the most fair pick (see SMART ASSIGN section). */
