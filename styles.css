@@ -55,33 +55,18 @@ td.pad-edge-l, th.pad-edge-l { border-left: 2px dotted #94a3b8; }
 .cm-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(8rem, 1fr)); gap: .5rem; }
 /* long names stay on 2 lines (full name is in the tooltip) so every card in a row keeps the same height */
 .cm-name { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; word-break: break-word; }
-.cm-selected-wrap { flex: 0 1 auto; min-height: 6.5rem; max-height: 38vh; max-height: 38dvh; overflow-y: auto; -webkit-overflow-scrolling: touch; }
-/* minmax(0,1fr): lets a row shrink to the screen instead of being pushed wider by its contents */
-.cm-selected-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: .5rem; }
-@media (min-width: 900px) { .cm-selected-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
-/* score / remove / not-performed buttons: comfortable size, bigger on touch screens */
-.cm-score-btn { width: 1.75rem; height: 1.75rem; }
-.cm-icon-btn  { width: 2rem; height: 2rem; }
-.cm-flag-btn  { padding: .375rem .625rem; }
-@media (pointer: coarse) {
-    .cm-score-btn { width: 2.25rem; height: 2.25rem; }
-    .cm-icon-btn  { width: 2.5rem; height: 2.5rem; }
-    .cm-flag-btn  { padding: .6rem .75rem; }
-}
 /* status dots: red = has another duty that day, yellow = had this duty recently, split = both */
 .pd-dot { display: inline-block; width: 10px; height: 10px; border-radius: 9999px; flex-shrink: 0; }
 .pd-dot-none   { background: transparent; }
 .pd-dot-red    { background: #ef4444; }
 .pd-dot-yellow { background: #fbbf24; }
 .pd-dot-both   { background: linear-gradient(90deg, #ef4444 50%, #fbbf24 50%); }
-/* phone held sideways (short + wide): students on the left, selected list on the right */
+/* phone held sideways (short + wide): tighter header/footer so the grid gets the room */
 @media (max-height: 520px) and (orientation: landscape) {
     .cell-modal-panel { max-height: 98vh; max-height: 98dvh; }
     .cm-header, .cm-footer { padding-top: .5rem; padding-bottom: .5rem; }
     .cm-legend { display: none; }
-    .cm-body { flex-direction: row; }
-    .cm-grid-wrap { flex: 1 1 58%; min-width: 0; min-height: 0; }
-    .cm-selected-wrap { flex: 0 0 42%; min-width: 0; min-height: 0; max-height: none; border-top: 0; border-left: 1px solid #e5e7eb; }
+    .cm-grid-wrap { flex: 1 1 auto; min-width: 0; min-height: 0; }
 }
 
 /* ===== Delete / archive profile dialog ===== */
