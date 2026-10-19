@@ -437,13 +437,12 @@
                 <div id="modalGridWrap" class="cm-grid-wrap p-3">
                     <div id="modalGrid" class="cm-grid"></div>
                 </div>
-                <div id="modalSelectedWrap" class="cm-selected-wrap border-t border-gray-200 bg-gray-50 px-3 pb-3">
-                    <p class="sticky top-0 z-10 bg-gray-50 -mx-3 px-3 pt-3 pb-2 text-[10px] font-bold text-gray-500 uppercase tracking-wide">Selected for this duty <span id="modalSelectedCount" class="ml-1 bg-brand-100 text-brand-900 px-1.5 py-0.5 rounded-full">0</span></p>
-                    <div id="modalSelectedList" class="cm-selected-grid"></div>
-                </div>
             </div>
             <div class="cm-footer p-4 border-t border-gray-200 bg-white flex items-center justify-between gap-2">
-                <button onclick="suggestAddStudent()" class="text-xs font-semibold text-brand-600 hover:text-brand-700 flex items-center space-x-1" title="Smart suggest: least-used student for this duty"><i class="fa-solid fa-wand-magic-sparkles"></i><span>Suggest</span></button>
+                <div class="flex items-center gap-3">
+                    <button onclick="suggestAddStudent()" class="text-xs font-semibold text-brand-600 hover:text-brand-700 flex items-center space-x-1" title="Smart suggest: least-used student for this duty"><i class="fa-solid fa-wand-magic-sparkles"></i><span>Suggest</span></button>
+                    <button id="modalClearAllBtn" type="button" onclick="modalClearAll()" class="text-xs font-semibold text-red-500 hover:text-red-600 disabled:opacity-40 disabled:cursor-not-allowed flex items-center space-x-1" title="Un-select every student for this duty" disabled><i class="fa-solid fa-eraser"></i><span>Clear all (<span id="modalSelectedCount">0</span>)</span></button>
+                </div>
                 <div class="flex items-center space-x-2">
                     <button onclick="cancelCellModal()" class="px-4 py-2 border border-gray-300 rounded-xl text-xs font-semibold text-gray-700 hover:bg-gray-100">Cancel</button>
                     <button onclick="saveCellAssignments()" class="bg-brand-500 hover:bg-brand-600 text-white px-5 py-2 rounded-xl text-xs font-bold transition shadow">Save Changes</button>
