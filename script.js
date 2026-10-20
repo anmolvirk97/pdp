@@ -689,13 +689,13 @@ function renderPlanner() {
     };
 
     const headerRow = document.getElementById('tableHeaderRow');
-    let headerHTML = `<th class="p-4 font-bold frozen-header bg-brand-100/90 border-r border-gray-200 w-64 shadow-sm">DUTY / DATE</th>`;
+    let headerHTML = `<th class="p-4 font-bold frozen-header bg-brand-100 border-r border-gray-200 w-28 min-w-[7rem] sm:w-64 sm:min-w-0 shadow-sm">DUTY / DATE</th>`;
     gridDays.forEach((dObj, i) => {
         const inMonth = isInMonth(dObj);
         const holiday = isHolidayDate(dObj.getFullYear(), dObj.getMonth(), dObj.getDate());
         const dayNameShort = dObj.toLocaleDateString('en-US', { weekday: 'short' });
         const dateNum = dObj.getDate();
-        let cls = 'p-4 font-semibold text-center min-w-[150px] border-r border-gray-200' + padClass(i);
+        let cls = 'p-2 sm:p-4 font-semibold text-center min-w-[120px] sm:min-w-[150px] border-r border-gray-200' + padClass(i);
         let extra = '';
         let dateCls = 'text-xs font-bold ' + (inMonth ? 'text-brand-600' : 'text-slate-600');
         if (!inMonth) {
@@ -720,7 +720,7 @@ function renderPlanner() {
 
     appData.duties.forEach((duty, dIdx) => {
         bodyHTML += `<tr class="hover:bg-gray-50/85 transition">`;
-        bodyHTML += `<td class="p-4 font-semibold text-gray-800 frozen-col border-r border-gray-200 shadow-sm bg-white">${esc(duty.name)}</td>`;
+        bodyHTML += `<td class="p-2 sm:p-4 text-xs sm:text-sm font-semibold text-gray-800 frozen-col border-r border-gray-200 shadow-sm bg-white">${esc(duty.name)}</td>`;
 
         gridDays.forEach((dObj, i) => {
             // Every day uses ITS OWN month's data, so borrowed days show what is really assigned to them
@@ -2391,11 +2391,11 @@ function renderStudentsView() {
     const perf = svViewMode === 'perf';
 
     const headerRow = document.getElementById('studentsViewHeaderRow');
-    let h = `<th class="p-3 font-bold sv-corner bg-brand-100 border-r border-gray-200 w-52 min-w-[200px]">STUDENT / ${perf ? 'SCORE' : 'DUTY'}</th>`;
+    let h = `<th class="p-2 sm:p-3 font-bold sv-corner bg-brand-100 border-r border-gray-200 w-32 min-w-[8rem] sm:w-52 sm:min-w-[200px]">STUDENT / ${perf ? 'SCORE' : 'DUTY'}</th>`;
     appData.duties.forEach((duty) => {
-        h += `<th class="p-3 font-semibold text-center min-w-[110px] border-r border-gray-200 sv-frozen-row bg-brand-100/95" title="${esc(duty.name)}"><span class="block truncate max-w-[130px] mx-auto">${esc(duty.name)}</span></th>`;
+        h += `<th class="p-3 font-semibold text-center min-w-[110px] border-r border-gray-200 sv-frozen-row bg-brand-100" title="${esc(duty.name)}"><span class="block truncate max-w-[130px] mx-auto">${esc(duty.name)}</span></th>`;
     });
-    h += `<th class="p-3 font-bold text-center min-w-[90px] sv-frozen-row bg-brand-100/95 border-l-2 border-gray-300">${perf ? 'AVG' : 'TOTAL'}</th>`;
+    h += `<th class="p-3 font-bold text-center min-w-[90px] sv-frozen-row bg-brand-100 border-l-2 border-gray-300">${perf ? 'AVG' : 'TOTAL'}</th>`;
     headerRow.innerHTML = h;
 
     const tbody = document.getElementById('studentsViewBody');
@@ -2409,10 +2409,10 @@ function renderStudentsView() {
         const avgAll = allScores.length ? (allScores.reduce((a, b) => a + b, 0) / allScores.length) : null;
 
         body += `<tr class="hover:bg-gray-50/85 transition">`;
-        body += `<td class="p-3 border-r border-gray-200 sv-frozen-col bg-white">
+        body += `<td class="p-2 sm:p-3 border-r border-gray-200 sv-frozen-col bg-white">
             <div class="flex items-center space-x-2">
-                <span class="w-7 h-7 rounded-full bg-brand-100 text-brand-900 flex items-center justify-center text-[10px] font-bold shrink-0">${esc(initials)}</span>
-                <div class="min-w-0"><p class="text-xs font-bold text-gray-900 truncate">${esc(s.name)}</p><p class="text-[10px] text-gray-400">${esc(s.class)}</p></div>
+                <span class="hidden sm:flex w-7 h-7 rounded-full bg-brand-100 text-brand-900 flex items-center justify-center text-[10px] font-bold shrink-0">${esc(initials)}</span>
+                <div class="min-w-0"><p class="text-xs font-bold text-gray-900 truncate">${esc(s.name)}</p><p class="hidden sm:block text-[10px] text-gray-400">${esc(s.class)}</p></div>
             </div></td>`;
 
         appData.duties.forEach((duty, dIdx) => {
@@ -2997,7 +2997,7 @@ function perfCardHTML(duty, sid, e) {
             <div class="relative flex-1 min-w-0">
                 <i class="fa-regular fa-comment-dots absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 text-sm pointer-events-none"></i>
                 <input type="text" class="pf-remark w-full h-11 sm:h-10 border border-gray-300 rounded-xl pl-9 pr-3 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500" maxlength="200"
-                    value="${esc(e.remark)}" placeholder="${e.absent ? 'Reason (optional)' : 'Remark (optional)'}" aria-label="Remark for ${esc(name)}" enterkeyhint="done" autocomplete="off">
+                    value="${esc(e.remark)}" placeholder="${e.absent ? 'Reason' : 'Remark'}" aria-label="Remark for ${esc(name)}" enterkeyhint="done" autocomplete="off">
             </div>
             <button type="button" data-act="np" aria-pressed="${e.absent}" title="${e.absent ? 'Tap to undo' : 'This student did not perform'}"
                 class="h-11 sm:h-10 px-3 sm:px-4 rounded-xl border text-xs font-bold whitespace-nowrap transition flex items-center gap-1.5 focus:outline-none focus:ring-2 focus:ring-red-300 ${e.absent ? 'bg-red-500 text-white border-red-500 shadow' : 'bg-white text-red-500 border-red-200 hover:bg-red-50'}">
@@ -3035,7 +3035,7 @@ function scoresHeaderHTML() {
         : kind === 'nopdp' ? '<span class="ml-2 px-2 py-0.5 rounded-full bg-indigo-100 text-indigo-600 text-[10px] font-bold align-middle">NO PDP</span>'
         : kind === 'sunday' ? '<span class="ml-2 px-2 py-0.5 rounded-full bg-gray-100 text-gray-500 text-[10px] font-bold align-middle">SUNDAY</span>' : '';
     return `
-    <div class="bg-white/95 backdrop-blur rounded-2xl border border-gray-200 shadow-sm p-4">
+    <div class="bg-white rounded-2xl border border-gray-200 shadow-sm p-3 sm:p-4">
         <div class="flex items-center justify-between gap-3">
             <div class="min-w-0">
                 <p class="text-[10px] font-bold uppercase tracking-wider text-brand-600">${isToday ? 'Today' : 'Scores & remarks'}</p>
