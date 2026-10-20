@@ -3,7 +3,9 @@
     left: 0;
     z-index: 20;
     background-color: #fff;
+    max-width: 8rem; /* phones: leave room for date columns */
 }
+@media (min-width: 640px) { .frozen-col { max-width: none; } }
 .frozen-header {
     position: sticky;
     left: 0;
@@ -76,3 +78,12 @@ td.pad-edge-l, th.pad-edge-l { border-left: 2px dotted #94a3b8; }
     .del-head { padding-top: .5rem; padding-bottom: .5rem; }
     .del-foot { padding-top: .5rem; padding-bottom: .5rem; }
 }
+
+/* ===== Phone / small-screen polish ===== */
+html { -webkit-text-size-adjust: 100%; }
+/* Scores tab: day header sticks only in the wide side-by-side layout (on phones it covered the first card) */
+#scoresDayHeader { position: static; }
+@media (min-width: 1280px) { #scoresDayHeader { position: sticky; top: 0; } }
+.overflow-x-auto, .overflow-auto { -webkit-overflow-scrolling: touch; overscroll-behavior-x: contain; }
+#mainViewport { padding-bottom: max(1rem, env(safe-area-inset-bottom)); }
+@media (max-width: 639px) { .nav-btn { min-height: 44px; } }
