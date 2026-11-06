@@ -832,8 +832,7 @@ function checkRepeatedWithin10Days(dutyId, year, month, dayNum, studentId) {
 
 /* ================= CELL EDIT MODAL =================
    Student picker (tap a name to select / un-select) + smart-suggest + clear-all.
-   Names go to assignments. Scores / remarks / "not performed" are NOT edited here
-   (use the Scores & remarks tab); this editor only carries the existing ones along
+   Names go to assignments. "Not performed" can be set here (button on each selected student); scores / remarks are edited in the Scores & remarks tab; this editor only carries the existing ones along
    for students who stay selected, and drops them for students who are removed. */
 let modalOrigMeta = {};   // meta each student had when the editor opened (so an accidental un-tap + re-tap loses nothing)
 
@@ -994,6 +993,7 @@ function renderModalGrid() {
     const monthsLabel = modalCountMonths + ' mo';
     grid.innerHTML = appData.students.map((st, i) => {
         const selected = modalTempAssignments.includes(st.id);
+        const mt = selected ? modalTempMeta[modalTempAssignments.indexOf(st.id)] : null, np = !!(mt && mt.absent);
         const busy = modalInfo.busy.has(st.id), recent = modalInfo.recent.has(st.id);
         const dot = busy && recent ? 'pd-dot-both' : busy ? 'pd-dot-red' : recent ? 'pd-dot-yellow' : 'pd-dot-none';
         const n = modalInfo.counts[st.id] || 0;
@@ -1001,10 +1001,11 @@ function renderModalGrid() {
         if (busy) notes.push('has another duty this day');
         if (recent) notes.push('had this duty in the last 10 days');
         const tip = `${st.name}${st.class ? ' (' + st.class + ')' : ''}: ${notes.length ? notes.join(', ') + '; ' : ''}${n} time${n === 1 ? '' : 's'} in the last ${modalCountMonths} month${modalCountMonths === 1 ? '' : 's'}`;
-        return `<button type="button" onclick="modalToggleStudent(${i})" aria-pressed="${selected}" title="${esc(tip)}" aria-label="${esc(tip)}" class="relative text-left p-2.5 pr-7 rounded-xl border transition min-h-[62px] flex flex-col justify-between ${selected ? 'bg-brand-50 border-brand-500 ring-2 ring-brand-500/40' : 'bg-white border-gray-200 hover:border-brand-500 hover:bg-brand-50/50'}">
+        return `<button type="button" onclick="modalToggleStudent(${i})" aria-pressed="${selected}" title="${esc(tip)}" aria-label="${esc(tip)}" class="relative text-left p-2.5 pr-7 rounded-xl border transition min-h-[62px] flex flex-col justify-between ${selected ? (np ? 'bg-red-50 border-red-400 ring-2 ring-red-400/40' : 'bg-brand-50 border-brand-500 ring-2 ring-brand-500/40') : 'bg-white border-gray-200 hover:border-brand-500 hover:bg-brand-50/50'}">
             <span class="cm-name text-sm font-semibold text-gray-900 leading-tight">${esc(st.name)}</span>
             <span class="mt-1.5 flex items-center gap-1.5 text-[11px] text-gray-500"><i class="pd-dot ${dot}"></i><span><b class="text-gray-700">${n}&times;</b> in ${monthsLabel}</span></span>
-            ${selected ? '<i class="fa-solid fa-circle-check text-brand-500 absolute top-2 right-2"></i>' : ''}
+            ${selected ? `<i class="fa-solid ${np ? 'fa-user-xmark text-red-500' : 'fa-circle-check text-brand-500'} absolute top-2 right-2"></i>` : ''}
+            ${selected ? `<span class="cm-np${np ? ' on' : ''}" role="button" tabindex="0" aria-pressed="${np}" data-sid="${esc(String(st.id))}" title="Mark as not performed" onclick="event.stopPropagation();modalToggleAbsent(this.dataset.sid)" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();event.stopPropagation();modalToggleAbsent(this.dataset.sid)}"><i class="fa-solid fa-user-xmark"></i>Not performed</span>` : ''}
         </button>`;
     }).join('');
     // Selected students no longer on the roster (archived): show them as tiles too, so they can still be un-selected
@@ -1015,6 +1016,7 @@ function renderModalGrid() {
             <span class="cm-name text-sm font-semibold text-gray-900 leading-tight">${esc(nm)}</span>
             <span class="mt-1.5 text-[10px] font-semibold text-amber-600">archived</span>
             <i class="fa-solid fa-circle-check text-brand-500 absolute top-2 right-2"></i>
+            <span class="cm-np${(modalTempMeta[modalTempAssignments.indexOf(id)] || {}).absent ? ' on' : ''}" role="button" tabindex="0" data-sid="${esc(String(id))}" onclick="event.stopPropagation();modalToggleAbsent(this.dataset.sid)"><i class="fa-solid fa-user-xmark"></i>Not performed</span>
         </button>`);
     });
     updateModalClearBtn();
@@ -1043,6 +1045,15 @@ function modalToggleById(id) {
         modalTempAssignments.push(id);
         modalTempMeta.push(modalOrigMeta[id] ? Object.assign({}, modalOrigMeta[id]) : { score: null, remark: '', absent: false });
     }
+    renderModalGrid();
+}
+
+// Mark a selected student as "Not performed" (or undo it). Saved with "Save Changes".
+function modalToggleAbsent(id) {
+    const at = modalTempAssignments.indexOf(id);
+    if (at < 0) return;
+    if (!modalTempMeta[at]) modalTempMeta[at] = { score: null, remark: '', absent: false };
+    modalTempMeta[at].absent = !modalTempMeta[at].absent;
     renderModalGrid();
 }
 
@@ -2665,6 +2676,7 @@ function draftIsNoPdp(draft, y, m, d) {
 
 function openHolidaysModal() {
     holMode = 'holiday';
+    holShiftMode = 'free'; holShiftDates = {};
     holDraft = {
         holidays: new Set(appData.holidays || []),
         overrides: new Set(appData.workingOverrides || []),
@@ -2763,6 +2775,7 @@ function renderHolidayCalendar() {
     }
     document.getElementById('holidayCalendar').innerHTML = html;
 
+    renderHolShift();
     document.getElementById('holidaySummary').textContent = marked.length
         ? `${marked.length} holiday${marked.length > 1 ? 's' : ''} in ${monthNames[holCalMonth]}: ${marked.join(', ')}`
         : `No holidays in ${monthNames[holCalMonth]}.`;
@@ -2800,78 +2813,160 @@ function saveHolidays() {
         && JSON.stringify(nextNoPdp) === JSON.stringify([...(appData.noPdp || [])].sort());
     if (unchanged) { closeHolidaysModal(); return; }
 
+    // Days newly marked off that still carry duties (worked out BEFORE anything is changed)
+    const pendingData = holPendingDays().filter(iso => dayHasData(parseIso(iso))).sort();
+    if (holShiftMode === 'date' && pendingData.length) {
+        let mergeNote = '';
+        for (const iso of pendingData) {
+            const val = holShiftDates[iso], t = val ? parseIso(val) : null;
+            const lbl = parseIso(iso).toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' });
+            if (!t || isNaN(t)) { alert('Choose the date to move the duties of ' + lbl + ' to.'); return; }
+            if (val === iso) { alert('The new date for ' + lbl + ' must be a different day.'); return; }
+            if (!holWorking(t, true)) { alert(t.toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'short' }) + ' is a Sunday, holiday or No PDP day. Choose a working day.'); return; }
+            if (dayHasData(t)) mergeNote += '\n- ' + t.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' });
+        }
+        if (mergeNote && !confirm('These dates already have duties assigned:' + mergeNote + '\n\nThe moved students will be ADDED to them. Continue?')) return;
+    }
+
     lastStateBackup = JSON.parse(JSON.stringify(appData));         // so Undo works
     appData.holidays = nextHolidays;
     appData.workingOverrides = nextOverrides;
     appData.noPdp = nextNoPdp;
 
-    let moved = 0;
-    if (document.getElementById('holidayShiftChk').checked) {
-        newlyHoliday.forEach(iso => {
-            const [y, m, d] = iso.split('-').map(Number);
-            moved += shiftDayDuties(y, m - 1, d);
+    let moved = 0, notFound = 0;
+    if (holShiftMode === 'free') {
+        pendingData.forEach(iso => {                                    // earliest first
+            const from = parseIso(iso), t = nextFreeDay(from, false, null);
+            if (t) moved += moveDayData(from, t); else notFound++;
         });
-    }
-    const noPdpChk = document.getElementById('noPdpShiftChk');
-    if (noPdpChk && noPdpChk.checked) {
-        newlyNoPdp.forEach(iso => {
-            const [y, m, d] = iso.split('-').map(Number);
-            moved += shiftDayDuties(y, m - 1, d);
-        });
+    } else if (holShiftMode === 'push') {
+        pendingData.slice().reverse().forEach(iso => { moved += pushDaysAhead(parseIso(iso)); });   // latest first, so the order of days is kept
+    } else if (holShiftMode === 'date') {
+        pendingData.forEach(iso => { moved += moveDayData(parseIso(iso), parseIso(holShiftDates[iso])); });
     }
 
     closeHolidaysModal();
     saveToStorage();
     renderPlanner();
     const what = newlyNoPdp.length || (appData.noPdp || []).length ? 'Holidays / No PDP days' : 'Holidays';
-    showUndoToast(moved > 0 ? `${what} saved - ${moved} assignment(s) moved to the next PDP day.` : `${what} saved.`);
+    showUndoToast((moved > 0 ? `${what} saved - ${moved} assignment(s) moved.` : `${what} saved.`) + (notFound ? ` No free day was found for ${notFound} day(s).` : ''));
 }
 
-/* Move every assignment / rating / absence of the given day to the next
-   working day (skipping Sundays and other holidays). Existing entries on
-   the target day are merged (names de-duplicated). */
-function shiftDayDuties(y, m, d) {
-    const mKey = getMonthKey(y, m);
-    const amap = (appData.assignments || {})[mKey];
-    if (!amap) return 0;
+/* ---- What happens to the duties of days just marked off ----
+   free: next working day with no duties yet | push: everything from that day onward moves one working day ahead
+   date: a date picked per day | none: leave as is */
+let holShiftMode = 'free';
+let holShiftDates = {};                         // marked day (iso) -> chosen target date (iso)
+const parseIso = iso => { const [y, m, d] = String(iso).split('-').map(Number); return new Date(y, m - 1, d); };
+const isoFromDate = dt => isoOf(dt.getFullYear(), dt.getMonth(), dt.getDate());
+const fmtShort = dt => dt.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' });
 
-    const t = nextWorkingDayAfter(y, m, d);
-    const tKey = getMonthKey(t.getFullYear(), t.getMonth());
-    const tDay = t.getDate();
-    if (!appData.assignments[tKey]) appData.assignments[tKey] = {};
-    if (!appData.ratings[tKey]) appData.ratings[tKey] = {};
-    if (!appData.absences[tKey]) appData.absences[tKey] = {};
-
+// A normal PDP day? (useDraft = judge by the calendar being edited, otherwise by the saved data)
+function holWorking(dt, useDraft) {
+    if (dt.getDay() === 0) return false;
+    const y = dt.getFullYear(), m = dt.getMonth(), d = dt.getDate();
+    return useDraft ? (!draftIsHoliday(holDraft, y, m, d) && !draftIsNoPdp(holDraft, y, m, d)) : (!isHolidayDate(y, m, d) && !isNoPdpDate(y, m, d));
+}
+function dayHasData(dt) {
+    const A = (appData.assignments || {})[getMonthKey(dt.getFullYear(), dt.getMonth())], d = dt.getDate();
+    return !!A && Object.keys(A).some(id => (((A[id] || {})[d]) || []).length > 0);
+}
+// Days that become holiday / No PDP with the current draft (not yet saved)
+function holPendingDays() {
+    const out = new Set();
+    new Set([...holDraft.holidays, ...(appData.workingOverrides || [])]).forEach(iso => {
+        const t = parseIso(iso);
+        if (t.getDay() === 0) return;
+        if (!isHolidayDate(t.getFullYear(), t.getMonth(), t.getDate()) && draftIsHoliday(holDraft, t.getFullYear(), t.getMonth(), t.getDate())) out.add(iso);
+    });
+    holDraft.noPdp.forEach(iso => {
+        const t = parseIso(iso), y = t.getFullYear(), m = t.getMonth(), d = t.getDate();
+        if (draftIsNoPdp(holDraft, y, m, d) && !isNoPdpDate(y, m, d)) out.add(iso);
+    });
+    return [...out];
+}
+// First working day after 'from' that has no duties yet (and is not in 'reserved')
+function nextFreeDay(from, useDraft, reserved) {
+    const t = new Date(from.getFullYear(), from.getMonth(), from.getDate());
+    for (let i = 0; i < 400; i++) {
+        t.setDate(t.getDate() + 1);
+        if (!holWorking(t, useDraft) || (reserved && reserved.has(isoFromDate(t))) || dayHasData(t)) continue;
+        return new Date(t);
+    }
+    return null;
+}
+function lastDataDate() {
+    let last = null;
+    Object.keys(appData.assignments || {}).forEach(mk => {
+        const [y, m] = mk.split('-').map(Number);
+        Object.keys(appData.assignments[mk] || {}).forEach(id => Object.keys(appData.assignments[mk][id] || {}).forEach(dy => {
+            if ((appData.assignments[mk][id][dy] || []).length) { const t = new Date(y, m - 1, Number(dy)); if (!last || t > last) last = t; }
+        }));
+    });
+    return last;
+}
+// Move everything planned on one day (names, scores, not-performed marks) to another day. Returns how many students moved.
+function moveDayData(from, to) {
+    const fK = getMonthKey(from.getFullYear(), from.getMonth()), fD = from.getDate();
+    const tK = getMonthKey(to.getFullYear(), to.getMonth()), tD = to.getDate();
     let moved = 0;
+    ['assignments', 'ratings', 'absences'].forEach(k => { if (!appData[k]) appData[k] = {}; });
     appData.duties.forEach(duty => {
-        const dKey = duty.id;
-        const srcNames = ((amap[dKey] || {})[d]) || [];
-        const srcRatings = (((appData.ratings[mKey] || {})[dKey]) || {})[d] || {};
-        const srcAbsent = (((appData.absences[mKey] || {})[dKey]) || {})[d] || [];
-        if (!srcNames.length && !Object.keys(srcRatings).length && !srcAbsent.length) return;
-
-        if (!appData.assignments[tKey][dKey]) appData.assignments[tKey][dKey] = {};
-        const target = appData.assignments[tKey][dKey][tDay] || [];
-        srcNames.forEach(n => { if (!target.includes(n)) target.push(n); });
-        appData.assignments[tKey][dKey][tDay] = target;
-
-        if (Object.keys(srcRatings).length) {
-            if (!appData.ratings[tKey][dKey]) appData.ratings[tKey][dKey] = {};
-            appData.ratings[tKey][dKey][tDay] = Object.assign({}, ((appData.ratings[tKey][dKey] || {})[tDay]) || {}, srcRatings);
-        }
-        if (srcAbsent.length) {
-            if (!appData.absences[tKey][dKey]) appData.absences[tKey][dKey] = {};
-            const tAbs = appData.absences[tKey][dKey][tDay] || [];
-            srcAbsent.forEach(n => { if (!tAbs.includes(n)) tAbs.push(n); });
-            appData.absences[tKey][dKey][tDay] = tAbs;
-        }
-
-        delete amap[dKey][d];
-        if (appData.ratings[mKey] && appData.ratings[mKey][dKey]) delete appData.ratings[mKey][dKey][d];
-        if (appData.absences[mKey] && appData.absences[mKey][dKey]) delete appData.absences[mKey][dKey][d];
-        moved += srcNames.length;
+        const id = duty.id;
+        const names = (((appData.assignments[fK] || {})[id]) || {})[fD] || [];
+        const rat = (((appData.ratings[fK] || {})[id]) || {})[fD] || {};
+        const abs = (((appData.absences[fK] || {})[id]) || {})[fD] || [];
+        if (!names.length && !Object.keys(rat).length && !abs.length) return;
+        const put = (store, fn) => { if (!store[tK]) store[tK] = {}; if (!store[tK][id]) store[tK][id] = {}; store[tK][id][tD] = fn(store[tK][id][tD]); };
+        put(appData.assignments, cur => { const a = cur || []; names.forEach(n => { if (!a.includes(n)) a.push(n); }); return a; });
+        if (Object.keys(rat).length) put(appData.ratings, cur => Object.assign({}, cur || {}, rat));
+        if (abs.length) put(appData.absences, cur => { const a = cur || []; abs.forEach(n => { if (!a.includes(n)) a.push(n); }); return a; });
+        [appData.assignments, appData.ratings, appData.absences].forEach(st => { if (st[fK] && st[fK][id]) delete st[fK][id][fD]; });
+        moved += names.length;
     });
     return moved;
+}
+// This day and every later day with duties each move to the next working day
+function pushDaysAhead(from) {
+    const last = lastDataDate(), seq = [new Date(from)], t = new Date(from);
+    for (let g = 0; g < 800; g++) {
+        t.setDate(t.getDate() + 1);
+        if (!holWorking(t, false)) continue;
+        seq.push(new Date(t));
+        if (!last || t > last) break;                   // one working day beyond the last planned day
+    }
+    let moved = 0;
+    for (let i = seq.length - 1; i >= 1; i--) moved += moveDayData(seq[i - 1], seq[i]);   // back to front: the target is always empty
+    return moved;
+}
+function setHolShift(v) { holShiftMode = ['free', 'push', 'date', 'none'].includes(v) ? v : 'free'; renderHolShift(); }
+function setHolShiftDate(iso, v) { holShiftDates[iso] = v; }
+function renderHolShift() {
+    const box = document.getElementById('holShiftBox'), det = document.getElementById('holShiftDetail');
+    if (!box || !det) return;
+    const days = holPendingDays().filter(iso => dayHasData(parseIso(iso))).sort();
+    if (!days.length) { box.classList.add('hidden'); return; }
+    box.classList.remove('hidden');
+    box.querySelectorAll('input[name=holShift]').forEach(r => { r.checked = r.value === holShiftMode; });
+    Object.keys(holShiftDates).forEach(k => { if (!days.includes(k)) delete holShiftDates[k]; });
+    const row = (a, b) => `<div class="flex items-center justify-between gap-2 bg-gray-50 border border-gray-200 rounded-lg px-2.5 py-1.5"><span class="font-semibold text-gray-700">${esc(a)}</span><span class="text-gray-600 text-right">${b}</span></div>`;
+    const arrow = '<i class="fa-solid fa-arrow-right text-brand-500 mx-1"></i>';
+    let html = '';
+    if (holShiftMode === 'free' || holShiftMode === 'date') {
+        const reserved = new Set();
+        html = days.map(iso => {
+            const from = parseIso(iso), sug = nextFreeDay(from, true, reserved);
+            if (sug) reserved.add(isoFromDate(sug));
+            if (holShiftMode === 'free') return row(fmtShort(from), sug ? arrow + esc(fmtShort(sug)) : '<span class="text-red-500">no free day found</span>');
+            if (!holShiftDates[iso] && sug) holShiftDates[iso] = isoFromDate(sug);
+            return row(fmtShort(from), arrow + `<input type="date" value="${esc(holShiftDates[iso] || '')}" onchange="setHolShiftDate('${iso}', this.value)" class="border border-gray-300 rounded-lg px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-brand-500">`);
+        }).join('');
+    } else if (holShiftMode === 'push') {
+        html = days.map(iso => { const from = parseIso(iso), t = new Date(from); do { t.setDate(t.getDate() + 1); } while (!holWorking(t, true) && t - from < 400 * 864e5); return row(fmtShort(from), arrow + esc(fmtShort(t))); }).join('');
+        const last = lastDataDate();
+        html += `<p class="text-[11px] text-gray-500">Every later day with duties also moves one working day ahead${last ? ' (the last planned day is ' + esc(fmtShort(last)) + ')' : ''}.</p>`;
+    }
+    det.innerHTML = html;
 }
 
 /* ================= SCORES & REMARKS TAB =================
@@ -3502,7 +3597,9 @@ function netMsg(err) {
 /* ---------- Secure server connection ---------- */
 let sessionToken = null;
 try { sessionToken = sessionStorage.getItem('pdp_token'); } catch (e) {}
-function clearSession() { sessionToken = null; try { sessionStorage.removeItem('pdp_token'); sessionStorage.removeItem('pdp_session_profile'); } catch (e) {} }
+let sgKeep = false;                              // "Stay in": no automatic logout while ON (cleared by every logout / session end)
+try { sgKeep = !!sessionToken && sessionStorage.getItem('pdp_keep') === '1'; } catch (e) {}
+function clearSession() { sessionToken = null; sgKeep = false; try { sessionStorage.removeItem('pdp_token'); sessionStorage.removeItem('pdp_session_profile'); sessionStorage.removeItem('pdp_keep'); } catch (e) {} }
 
 async function api(path, opts = {}) {
     const headers = { 'Content-Type': 'application/json' };
@@ -3591,6 +3688,46 @@ function pinFailInfo(id) {
 }
 function setPinFailInfo(id, o) { try { localStorage.setItem('pdp_pin_fail_' + id, JSON.stringify(o)); } catch (e) {} }
 
+/* ---------- PIN pad (touch keys + physical keyboard) ---------- */
+let lockPinBuf = '', lockPinBusy = false;
+function updatePinDots() {
+    const el = document.getElementById('pinDots');
+    if (!el) return;
+    const n = Math.max(4, lockPinBuf.length);
+    while (el.children.length < n) { const d = document.createElement('span'); d.className = 'pin-dot'; el.appendChild(d); }
+    while (el.children.length > n) el.removeChild(el.lastChild);
+    Array.prototype.forEach.call(el.children, (d, i) => { const on = i < lockPinBuf.length; if (on !== d.classList.contains('on')) d.classList.toggle('on', on); });
+}
+function pinPress(ch) {
+    if (lockPinBusy || lockPinBuf.length >= 8 || !/^\d$/.test(ch)) return;
+    lockPinBuf += ch; showLockError(''); updatePinDots();
+}
+function pinBack() { if (lockPinBusy || !lockPinBuf) return; lockPinBuf = lockPinBuf.slice(0, -1); updatePinDots(); }
+function pinClear() { if (lockPinBusy) return; lockPinBuf = ''; updatePinDots(); }
+function pinReject(msg) {                       // wrong PIN: show the message, shake the dots, then empty them
+    showLockError(msg);
+    const el = document.getElementById('pinDots');
+    lockPinBusy = true;
+    if (el) { el.classList.remove('shake'); void el.offsetWidth; el.classList.add('shake'); }
+    if (navigator.vibrate) { try { navigator.vibrate(120); } catch (e) {} }
+    setTimeout(() => {
+        lockPinBuf = ''; lockPinBusy = false; updatePinDots();
+        const e2 = document.getElementById('pinDots'); if (e2) e2.classList.remove('shake');
+        const b = document.getElementById('lockUnlockBtn'); if (b) b.disabled = false;
+    }, 480);
+}
+document.addEventListener('keydown', e => {      // type the PIN on a physical keyboard
+    if (lockView !== 'pin' || e.ctrlKey || e.metaKey || e.altKey) return;
+    const ls = document.getElementById('lockScreen'), cm = document.getElementById('sessionConflictModal');
+    if (!ls || ls.classList.contains('hidden') || (cm && !cm.classList.contains('hidden'))) return;
+    const t = e.target;
+    if (t && /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName)) return;
+    if (/^\d$/.test(e.key)) { e.preventDefault(); pinPress(e.key); }
+    else if (e.key === 'Backspace') { e.preventDefault(); pinBack(); }
+    else if (e.key === 'Escape' || e.key === 'Delete') { e.preventDefault(); pinClear(); }
+    else if (e.key === 'Enter') { if (t && t.tagName === 'BUTTON') return; e.preventDefault(); submitPin(); }
+});
+
 function renderLockPin() {
     lockView = 'pin';
     const p = profilesList.find(x => x.id === lockViewProfileId) || profilesList[0];
@@ -3601,17 +3738,22 @@ function renderLockPin() {
             <h2 class="mt-3 text-lg font-bold text-gray-900">${esc(p.name)}</h2>
             <p class="text-xs text-gray-500">${esc(classLabel(p) || 'PDP Incharge')} &bull; @${esc(p.id)}</p>
         </div>
-        <input id="lockPin" type="password" inputmode="numeric" pattern="[0-9]*" autocomplete="current-password" maxlength="8" placeholder="Enter PIN"
-            oninput="this.value=this.value.replace(/\\D/g,'')" onkeydown="if(event.key==='Enter')submitPin()"
-            class="w-full mt-5 text-center tracking-[0.4em] text-lg border border-gray-300 rounded-xl p-3 focus:outline-none focus:ring-2 focus:ring-brand-500">
+        <p class="text-center text-xs font-semibold text-gray-500 mt-5">Enter your PIN</p>
+        <div id="pinDots" class="pin-dots" role="img" aria-label="PIN digits entered"></div>
         <p id="lockError" class="text-xs text-red-500 font-semibold text-center mt-2 min-h-[16px]"></p>
-        <button id="lockUnlockBtn" onclick="submitPin()" class="w-full mt-3 bg-brand-500 hover:bg-brand-600 text-white py-3 rounded-xl font-semibold text-sm transition shadow">Unlock</button>
+        <div class="pin-pad" role="group" aria-label="PIN keypad">
+            ${['1','2','3','4','5','6','7','8','9'].map(n => `<button type="button" class="pin-key" onmousedown="event.preventDefault()" onclick="pinPress('${n}')" aria-label="${n}">${n}</button>`).join('')}
+            <button type="button" id="lockUnlockBtn" class="pin-key go" onmousedown="event.preventDefault()" onclick="submitPin()" aria-label="Unlock" title="Unlock (Enter)"><i class="fa-solid fa-check"></i></button>
+            <button type="button" class="pin-key" onmousedown="event.preventDefault()" onclick="pinPress('0')" aria-label="0">0</button>
+            <button type="button" class="pin-key ghost" onmousedown="event.preventDefault()" onclick="pinBack()" aria-label="Delete last digit" title="Delete (Backspace)"><i class="fa-solid fa-delete-left"></i></button>
+        </div>
         <div class="flex items-center justify-between mt-4 text-xs">
             <button onclick="renderLockChooser()" class="text-brand-600 hover:text-brand-900 font-semibold"><i class="fa-solid fa-right-left mr-1"></i>Switch profile</button>
             <button onclick="renderLockCreate()" class="text-gray-500 hover:text-gray-800 font-semibold"><i class="fa-solid fa-plus mr-1"></i>New profile</button>
         </div>`;
     setLockStatus();
-    setTimeout(() => { const i = document.getElementById('lockPin'); if (i) i.focus(); }, 50);
+    lockPinBuf = ''; lockPinBusy = false;
+    updatePinDots();
 }
 
 function renderLockChooser() {
@@ -3706,28 +3848,29 @@ async function submitCreateProfile() {
 }
 
 async function submitPin() {
-    const input = document.getElementById('lockPin');
     const p = profilesList.find(x => x.id === lockViewProfileId);
-    if (!input || !p) return;
-    const pin = input.value.trim();
+    if (!p || lockPinBusy) return;
+    const pin = lockPinBuf;
     if (!pin) return showLockError('Enter your PIN.');
+    if (!validPin(pin)) return pinReject('PIN must be 4 to 8 digits.');
     const btn = document.getElementById('lockUnlockBtn');
     if (btn) btn.disabled = true;
+    lockPinBusy = true;
     try {
         const r = await api('/login', { body: { id: p.id, pin } });      // the server checks the PIN
         showLockError('');
+        lockPinBuf = ''; lockPinBusy = false; updatePinDots();
         await finishLogin(r);
     } catch (err) {
-        input.value = '';
         if (err.code === 'active_elsewhere') {                      // already logged in somewhere else: ask first
             showLockError('');
+            lockPinBuf = ''; lockPinBusy = false; updatePinDots();
             if (btn) btn.disabled = false;
             sgAskTakeover(p, pin, err.other);
             return;
         }
-        showLockError(netMsg(err));
-        if (btn) btn.disabled = false;
-        input.focus();
+        lockPinBusy = false;
+        pinReject(netMsg(err));
     }
 }
 
@@ -3858,6 +4001,7 @@ function sgStart() {
     sgBeatTimer = setInterval(sgBeat, SG_BEAT_MS);
     sgIdleTimer = setInterval(sgCheckIdle, 1000);
     sgBeat();                                      // the login itself is activity - report it straight away
+    renderKeepUI();
 }
 function sgStop(keepFlags) {
     clearInterval(sgBeatTimer); clearInterval(sgIdleTimer); sgBeatTimer = sgIdleTimer = null;
@@ -3888,6 +4032,10 @@ function sgRemoteLogout(e) {
 
 function sgCheckIdle() {
     if (sgOut || !sessionToken) return;
+    if (sgKeep) {                                   // "Stay in" is ON: never log out for inactivity
+        if (sgWarnAt) { sgWarnAt = 0; const w = document.getElementById('idleWarnModal'); if (w) w.classList.add('hidden'); }
+        return;
+    }
     const now = Date.now(), idle = now - sgLast;
     if (!sgWarnAt) {
         if (idle < SG_IDLE_MS) return;
@@ -3900,6 +4048,35 @@ function sgCheckIdle() {
     const c = document.getElementById('idleWarnCount');
     if (c) c.textContent = Math.max(left, 0);
     if (left <= 0) lockApp(false, 'idle');
+}
+function renderKeepUI() {
+    const b = document.getElementById('keepBtn'), g = document.getElementById('keepBadge');
+    if (b) {
+        b.classList.toggle('keep-on', sgKeep);
+        b.setAttribute('aria-pressed', sgKeep ? 'true' : 'false');
+        b.title = sgKeep ? 'Stay in is ON - no automatic logout. Tap to turn off.' : 'Stay in: turn off automatic logout when idle';
+    }
+    if (g) { g.classList.toggle('hidden', !sgKeep); g.classList.toggle('inline-flex', sgKeep); }
+}
+function toggleKeepLoggedIn() {
+    if (!sessionToken) return;
+    sgKeep = !sgKeep;
+    try { if (sgKeep) sessionStorage.setItem('pdp_keep', '1'); else sessionStorage.removeItem('pdp_keep'); } catch (e) {}
+    sgWarnAt = 0; sgLast = Date.now();                // turning it off starts a fresh 1-minute idle window
+    const w = document.getElementById('idleWarnModal'); if (w) w.classList.add('hidden');
+    renderKeepUI();
+    showToastMsg(sgKeep ? 'Stay in is ON - you will not be logged out for inactivity.' : 'Stay in is OFF - automatic logout is back.');
+}
+// small message that is not an "undo" toast
+function showToastMsg(msg) {
+    let t = document.getElementById('miniToast');
+    if (!t) {
+        t = document.createElement('div'); t.id = 'miniToast'; t.setAttribute('role', 'status');
+        t.className = 'no-print fixed left-1/2 bottom-6 -translate-x-1/2 z-[130] bg-gray-900 text-white text-xs font-semibold px-4 py-2.5 rounded-xl shadow-lg max-w-[90vw] text-center transition-opacity duration-300';
+        document.body.appendChild(t);
+    }
+    t.textContent = msg; t.style.opacity = '1';
+    clearTimeout(t._h); t._h = setTimeout(() => { t.style.opacity = '0'; }, 2600);
 }
 function sgStay() {
     sgWarnAt = 0;
