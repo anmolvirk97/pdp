@@ -93,10 +93,11 @@
                         <p class="text-gray-400 text-[10px] truncate" id="sbProfileSub"></p>
                     </div>
                 </div>
-                <div class="grid grid-cols-3 gap-2 mt-3">
+                <div class="grid grid-cols-4 gap-1.5 mt-3">
                     <button onclick="openProfileSettings()" class="bg-gray-800 hover:bg-gray-700 text-gray-200 py-2 rounded-lg transition" title="Profile settings" aria-label="Profile settings"><i class="fa-solid fa-user-gear"></i><span class="block text-[9px] mt-0.5 text-gray-400">Settings</span></button>
                     <button onclick="switchProfile()" class="bg-gray-800 hover:bg-gray-700 text-gray-200 py-2 rounded-lg transition" title="Switch profile" aria-label="Switch profile"><i class="fa-solid fa-right-left"></i><span class="block text-[9px] mt-0.5 text-gray-400">Switch</span></button>
                     <button onclick="lockApp()" class="bg-gray-800 hover:bg-gray-700 text-gray-200 py-2 rounded-lg transition" title="Lock" aria-label="Lock"><i class="fa-solid fa-lock"></i><span class="block text-[9px] mt-0.5 text-gray-400">Lock</span></button>
+                    <button id="keepBtn" onclick="toggleKeepLoggedIn()" aria-pressed="false" class="bg-gray-800 hover:bg-gray-700 text-gray-200 py-2 rounded-lg transition" title="Stay logged in: no automatic logout when idle" aria-label="Stay logged in"><i class="fa-solid fa-user-lock"></i><span class="block text-[9px] mt-0.5 text-gray-400">Stay in</span></button>
                 </div>
             </div>
         </div>
@@ -138,6 +139,7 @@
                     <span class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
                     <span id="saveBadge">Synced to cloud</span>
                 </div>
+                <button id="keepBadge" onclick="toggleKeepLoggedIn()" class="hidden items-center space-x-1.5 bg-brand-50 text-brand-600 px-2.5 py-1.5 rounded-full text-xs font-semibold border border-brand-500/40" title="Auto logout is off - tap to turn it back on"><i class="fa-solid fa-user-lock"></i><span class="hidden sm:inline">Stay in</span></button>
                 <div class="flex items-center space-x-3 border-l pl-4 border-gray-200">
                     <div class="w-9 h-9 rounded-full bg-brand-100 text-brand-900 flex items-center justify-center font-bold text-sm border border-brand-500/30" id="hdrAvatar">TS</div>
                     <div class="hidden sm:block text-left">
@@ -602,14 +604,14 @@
                 <p id="holidaySummary" class="text-xs font-semibold text-red-600 bg-red-50 border border-red-100 rounded-xl px-3 py-2"></p>
                 <p id="noPdpSummary" class="hidden text-xs font-semibold text-indigo-600 bg-indigo-50 border border-indigo-100 rounded-xl px-3 py-2"></p>
 
-                <label class="flex items-start space-x-2 text-xs text-gray-600 cursor-pointer">
-                    <input type="checkbox" id="holidayShiftChk" checked class="accent-brand-500 mt-0.5">
-                    <span>Move duties from newly marked holidays to the next working day</span>
-                </label>
-                <label class="flex items-start space-x-2 text-xs text-gray-600 cursor-pointer">
-                    <input type="checkbox" id="noPdpShiftChk" checked class="accent-brand-500 mt-0.5">
-                    <span>Move duties from newly marked No PDP days to the next PDP day</span>
-                </label>
+                <div id="holShiftBox" class="hidden space-y-2">
+                    <p class="text-xs font-bold text-gray-800">What should happen to the duties of the day(s) you just marked?</p>
+                    <label class="hol-opt"><input type="radio" name="holShift" value="free" checked onchange="setHolShift(this.value)" class="accent-brand-500 mt-0.5"><span><b>Move to the next free day</b><br><span class="text-gray-500">The next working day that has no duties assigned yet.</span></span></label>
+                    <label class="hol-opt"><input type="radio" name="holShift" value="push" onchange="setHolShift(this.value)" class="accent-brand-500 mt-0.5"><span><b>Push all upcoming days one day ahead</b><br><span class="text-gray-500">This day and every later day with duties move to the next working day. Works for several holidays at once.</span></span></label>
+                    <label class="hol-opt"><input type="radio" name="holShift" value="date" onchange="setHolShift(this.value)" class="accent-brand-500 mt-0.5"><span><b>Move to a date I choose</b><br><span class="text-gray-500">Pick the exact date for each day.</span></span></label>
+                    <label class="hol-opt"><input type="radio" name="holShift" value="none" onchange="setHolShift(this.value)" class="accent-brand-500 mt-0.5"><span><b>Leave the duties where they are</b></span></label>
+                    <div id="holShiftDetail" class="text-xs space-y-1.5"></div>
+                </div>
             </div>
             <div class="p-3 sm:p-4 border-t border-gray-200 bg-gray-50 flex justify-end space-x-2 shrink-0">
                 <button onclick="closeHolidaysModal()" class="px-4 py-2 border border-gray-300 rounded-xl text-xs font-semibold text-gray-700 hover:bg-gray-100">Cancel</button>
